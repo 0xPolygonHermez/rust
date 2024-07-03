@@ -54,7 +54,7 @@ jobs:
           fetch-depth: 0
 
       - name: Build
-        run: GITHUB_ACTIONS=false ZISK_BUILD_DIR=$GITHUB_WORKSPACE cargo run --bin cargo-prove -- prove build-toolchain
+        run: GITHUB_ACTIONS=false ZISK_BUILD_DIR=$GITHUB_WORKSPACE cargo run --bin cargo-zisk -- sdk build-toolchain
         working-directory: zisk
 
       - name: Archive build output
