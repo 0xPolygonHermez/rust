@@ -2,6 +2,10 @@ name: CI
 
 on:
   workflow_call:
+    secrets:
+      TOKEN:
+        required: true
+
   workflow_dispatch:
 
 jobs:
