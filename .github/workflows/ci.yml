@@ -20,7 +20,7 @@ jobs:
 #            triple: x86_64-apple-darwin
           - os: ubuntu-20.04
             triple: x86_64-unknown-linux-gnu
-#          - os: buildjet-32vcpu-ubuntu-2204-arm
+#          - os: ubuntu-22.04
 #            triple: aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
     steps:
@@ -31,8 +31,8 @@ jobs:
           brew tap riscv-software-src/riscv
           brew install riscv-tools
 
-      - name: Install riscv-tools
-        if: matrix.os == 'buildjet-32vcpu-ubuntu-2004' || matrix.os == 'buildjet-32vcpu-ubuntu-2204-arm'
+      - name: Install gcc-riscv64-unknown-elf
+        if: matrix.os == 'ubuntu-20.04' || matrix.os == 'ubuntu-22.04'
         run: |
           sudo apt-get update
           sudo apt-get -y install gcc-riscv64-unknown-elf
