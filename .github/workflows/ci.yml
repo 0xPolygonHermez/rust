@@ -25,11 +25,17 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
 
-      - name: Install 
+      - name: Install riscv-tools
         if: matrix.os == 'macos-14' || matrix.os == 'macos-13'
         run: |
           brew tap riscv-software-src/riscv
           brew install riscv-tools
+
+      - name: Install riscv-tools
+        if: matrix.os == 'buildjet-32vcpu-ubuntu-2004' || matrix.os == 'buildjet-32vcpu-ubuntu-2204-arm'
+        run: |
+          sudo apt-get update
+          sudo apt-get -y install gcc-riscv64-unknown-elf
 
       - name: Install nightly toolchain
         id: rustc-toolchain
@@ -45,10 +51,10 @@ jobs:
           cargo version
           rustup toolchain list
 
-      - name: Check out eduadiez/zisk
+      - name: Check out 0xPolygonHermez/zisk
         uses: actions/checkout@v3
         with:
-          repository: eduadiez/zisk
+          repository: 0xPolygonHermez/zisk
           token: ${{ secrets.TOKEN }}
           ref: main
           path: zisk
