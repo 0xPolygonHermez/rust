@@ -24,6 +24,11 @@ jobs:
             triple: aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
     steps:
+
+      - name: Install 
+        if: matrix.os == 'macos-14' || matrix.os == 'macos-13'
+        run: brew install riscv-tools
+
       - name: Install nightly toolchain
         id: rustc-toolchain
         uses: actions-rs/toolchain@v1
@@ -46,7 +51,7 @@ jobs:
           ref: main
           path: zisk
 
-      - name: Check out eduadiez/rust
+      - name: Check out 0xPolygonHermez/rust
         uses: actions/checkout@v3
         with:
           submodules: "recursive"
