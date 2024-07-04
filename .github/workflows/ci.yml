@@ -27,7 +27,9 @@ jobs:
 
       - name: Install 
         if: matrix.os == 'macos-14' || matrix.os == 'macos-13'
-        run: brew install riscv-tools
+        run: |
+          brew tap riscv-software-src/riscv
+          brew install riscv-tools
 
       - name: Install nightly toolchain
         id: rustc-toolchain
