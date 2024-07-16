@@ -56,7 +56,7 @@ jobs:
         with:
           repository: 0xPolygonHermez/zisk
           token: ${{ secrets.TOKEN }}
-          ref: main
+          ref: develop
           path: zisk
 
       - name: Check out 0xPolygonHermez/rust
