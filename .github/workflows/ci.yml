@@ -10,19 +10,19 @@ on:
 
 jobs:
   build:
-#    strategy:
-#      fail-fast: false
-#      matrix:
-#        include:
-#          - os: macos-14
-#            triple: aarch64-apple-darwin
-#          - os: macos-13
-#            triple: x86_64-apple-darwin
-#          - os: ubuntu-20.04
-#            triple: x86_64-unknown-linux-gnu
-#          - os: ubuntu-22.04
-#            triple: aarch64-unknown-linux-gnu
-    runs-on: self-hosted
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            triple: aarch64-apple-darwin
+          - os: macos-13
+            triple: x86_64-apple-darwin
+          - os: ubuntu-20.04
+            triple: x86_64-unknown-linux-gnu
+          - os: ubuntu-22.04
+            triple: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
     steps:
 
       - name: Install riscv-tools
@@ -73,10 +73,6 @@ jobs:
       - name: Archive build output
         uses: actions/upload-artifact@v3
         with:
-          #name: rust-toolchain-${{ matrix.triple }}
-          #path: |
-          #  zisk/rust-toolchain-${{ matrix.triple }}.tar.gz
-          name: rust-toolchain-x86_64-unknown-linux-gnu
+          name: rust-toolchain-${{ matrix.triple }}
           path: |
-            zisk/rust-toolchain-x86_64-unknown-linux-gnu.tar.gz
-          
+            zisk/rust-toolchain-${{ matrix.triple }}.tar.gz
