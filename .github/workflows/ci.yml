@@ -32,11 +32,11 @@ jobs:
           brew tap riscv-software-src/riscv
           brew install riscv-tools
 
-      - name: Install gcc-riscv64-unknown-elf
-        if: matrix.os == 'ubuntu-20.04' || matrix.os == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get -y install gcc-riscv64-unknown-elf
+      # - name: Install gcc-riscv64-unknown-elf
+      #  if: matrix.os == 'ubuntu-20.04' || matrix.os == 'ubuntu-22.04'
+      #  run: |
+      #    sudo apt-get update
+      #    sudo apt-get -y install gcc-riscv64-unknown-elf
 
       - name: Install nightly toolchain
         id: rustc-toolchain
