@@ -38,7 +38,8 @@ pub struct Finder {
 // Targets can be removed from this list once they are present in the stage0 compiler (usually by updating the beta compiler of the bootstrap).
 #[cfg(not(feature = "bootstrap-self-test"))]
 const STAGE0_MISSING_TARGETS: &[&str] = &[
-    // just a dummy comment so the list doesn't get onelined
+    "riscv64ima-polygon-ziskos-elf",
+    "riscv32ima-polygon-ziskos-elf", // just a dummy comment so the list doesn't get onelined
 ];
 
 /// Minimum version threshold for libstdc++ required when using prebuilt LLVM

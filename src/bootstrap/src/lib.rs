@@ -727,6 +727,9 @@ impl Build {
         if target.contains("zkvm") {
             features.push_str(" compiler-builtins-mem");
         }
+        if target.contains("ziskos") {
+            features.push_str(" compiler-builtins-mem");
+        }
         features
     }
 
