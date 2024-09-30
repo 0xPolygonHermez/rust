@@ -723,12 +723,13 @@ pub fn line_directive<'line>(
     }
 }
 
-// To prevent duplicating the list of commmands between `compiletest` and `htmldocck`, we put
-// it into a common file which is included in rust code and parsed here.
+// To prevent duplicating the list of commmands between `compiletest`,`htmldocck` and `jsondocck`,
+// we put it into a common file which is included in rust code and parsed here.
 // FIXME: This setup is temporary until we figure out how to improve this situation.
+//        See <https://github.com/rust-lang/rust/issues/125813#issuecomment-2141953780>.
 include!("command-list.rs");
 
-const KNOWN_RUSTDOC_DIRECTIVE_NAMES: &[&str] = &[
+const KNOWN_HTMLDOCCK_DIRECTIVE_NAMES: &[&str] = &[
     "count",
     "!count",
     "files",
@@ -746,6 +747,9 @@ const KNOWN_RUSTDOC_DIRECTIVE_NAMES: &[&str] = &[
     "snapshot",
     "!snapshot",
 ];
+
+const KNOWN_JSONDOCCK_DIRECTIVE_NAMES: &[&str] =
+    &["count", "!count", "has", "!has", "is", "!is", "ismany", "!ismany", "set", "!set"];
 
 /// The broken-down contents of a line containing a test header directive,
 /// which [`iter_header`] passes to its callback function.
@@ -783,7 +787,7 @@ pub(crate) struct CheckDirectiveResult<'ln> {
 
 pub(crate) fn check_directive<'a>(
     directive_ln: &'a str,
-    is_rustdoc: bool,
+    mode: Mode,
     original_line: &str,
 ) -> CheckDirectiveResult<'a> {
     let (directive_name, post) = directive_ln.split_once([':', ' ']).unwrap_or((directive_ln, ""));
@@ -791,9 +795,18 @@ pub(crate) fn check_directive<'a>(
     let trailing = post.trim().split_once(' ').map(|(pre, _)| pre).unwrap_or(post);
     let is_known = |s: &str| {
         KNOWN_DIRECTIVE_NAMES.contains(&s)
-            || (is_rustdoc
-                && original_line.starts_with("//@")
-                && KNOWN_RUSTDOC_DIRECTIVE_NAMES.contains(&s))
+            || match mode {
+                Mode::Rustdoc | Mode::RustdocJson => {
+                    original_line.starts_with("//@")
+                        && match mode {
+                            Mode::Rustdoc => KNOWN_HTMLDOCCK_DIRECTIVE_NAMES,
+                            Mode::RustdocJson => KNOWN_JSONDOCCK_DIRECTIVE_NAMES,
+                            _ => unreachable!(),
+                        }
+                        .contains(&s)
+                }
+                _ => false,
+            }
     };
     let trailing_directive = {
         // 1. is the directive name followed by a space? (to exclude `:`)
@@ -875,7 +888,7 @@ fn iter_header(
                 let directive_ln = non_revisioned_directive_line.trim();
 
                 let CheckDirectiveResult { is_known_directive, trailing_directive, .. } =
-                    check_directive(directive_ln, mode == Mode::Rustdoc, ln);
+                    check_directive(directive_ln, mode, ln);
 
                 if !is_known_directive {
                     *poisoned = true;
@@ -928,7 +941,7 @@ fn iter_header(
             let rest = rest.trim_start();
 
             let CheckDirectiveResult { is_known_directive, directive_name, .. } =
-                check_directive(rest, mode == Mode::Rustdoc, ln);
+                check_directive(rest, mode, ln);
 
             if is_known_directive {
                 *poisoned = true;
@@ -991,13 +1004,19 @@ impl Config {
     }
 
     fn parse_custom_normalization(&self, line: &str, prefix: &str) -> Option<(String, String)> {
-        if parse_cfg_name_directive(self, line, prefix).outcome == MatchOutcome::Match {
-            let (regex, replacement) = parse_normalize_rule(line)
-                .unwrap_or_else(|| panic!("couldn't parse custom normalization rule: `{line}`"));
-            Some((regex, replacement))
-        } else {
-            None
+        let parsed = parse_cfg_name_directive(self, line, prefix);
+        if parsed.outcome != MatchOutcome::Match {
+            return None;
         }
+        let name = parsed.name.expect("successful match always has a name");
+
+        let Some((regex, replacement)) = parse_normalize_rule(line) else {
+            panic!(
+                "couldn't parse custom normalization rule: `{line}`\n\
+                help: expected syntax is: `{prefix}-{name}: \"REGEX\" -> \"REPLACEMENT\"`"
+            );
+        };
+        Some((regex, replacement))
     }
 
     fn parse_name_directive(&self, line: &str, directive: &str) -> bool {
@@ -1121,13 +1140,11 @@ fn expand_variables(mut value: String, config: &Config) -> String {
 /// normalize-*: "REGEX" -> "REPLACEMENT"
 /// ```
 fn parse_normalize_rule(header: &str) -> Option<(String, String)> {
-    // FIXME(#126370): A colon after the header name should be mandatory, but
-    // currently is not, and there are many tests that lack the colon.
     // FIXME: Support escaped double-quotes in strings.
     let captures = static_regex!(
         r#"(?x) # (verbose mode regex)
         ^
-        [^:\s]+:?\s*            # (header name followed by optional colon)
+        [^:\s]+:\s*             # (header name followed by colon)
         "(?<regex>[^"]*)"       # "REGEX"
         \s+->\s+                # ->
         "(?<replacement>[^"]*)" # "REPLACEMENT"

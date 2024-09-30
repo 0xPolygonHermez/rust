@@ -5,8 +5,10 @@ use std::panic;
 use std::path::Path;
 use std::process::{Command as StdCommand, ExitStatus, Output, Stdio};
 
-use crate::drop_bomb::DropBomb;
-use crate::{assert_contains, assert_equals, assert_not_contains, handle_failed_output};
+use crate::util::handle_failed_output;
+use crate::{assert_contains, assert_equals, assert_not_contains};
+
+use build_helper::drop_bomb::DropBomb;
 
 /// This is a custom command wrapper that simplifies working with commands and makes it easier to
 /// ensure that we check the exit status of executed processes.
@@ -75,11 +77,12 @@ impl Command {
     /// Generic command arguments provider. Prefer specific helper methods if possible.
     /// Note that for some executables, arguments might be platform specific. For C/C++
     /// compilers, arguments might be platform *and* compiler specific.
-    pub fn args<S>(&mut self, args: &[S]) -> &mut Self
+    pub fn args<S, V>(&mut self, args: V) -> &mut Self
     where
         S: AsRef<ffi::OsStr>,
+        V: AsRef<[S]>,
     {
-        self.cmd.args(args);
+        self.cmd.args(args.as_ref());
         self
     }
 

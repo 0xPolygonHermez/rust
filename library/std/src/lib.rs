@@ -252,6 +252,7 @@
 #![allow(internal_features)]
 #![deny(rustc::existing_doc_keyword)]
 #![deny(fuzzy_provenance_casts)]
+#![deny(unsafe_op_in_unsafe_fn)]
 #![allow(rustdoc::redundant_explicit_links)]
 // Ensure that std can be linked against panic_abort despite compiled with `-C panic=unwind`
 #![deny(ffi_unwind_calls)]
@@ -266,6 +267,7 @@
 )]
 #![cfg_attr(any(windows, target_os = "uefi"), feature(round_char_boundary))]
 #![cfg_attr(target_family = "wasm", feature(stdarch_wasm_atomic_wait))]
+#![cfg_attr(target_arch = "wasm64", feature(simd_wasm64))]
 #![cfg_attr(
     all(any(target_arch = "x86_64", target_arch = "x86"), target_os = "uefi"),
     feature(stdarch_x86_has_cpuid)
@@ -291,6 +293,7 @@
 #![feature(doc_masked)]
 #![feature(doc_notable_trait)]
 #![feature(dropck_eyepatch)]
+#![feature(extended_varargs_abi_support)]
 #![feature(f128)]
 #![feature(f16)]
 #![feature(if_let_guard)]
@@ -468,7 +471,6 @@ pub mod rt;
 // The Rust prelude
 pub mod prelude;
 
-// Public module declarations and re-exports
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use alloc_crate::borrow;
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -663,7 +665,7 @@ pub mod alloc;
 mod panicking;
 
 #[path = "../../backtrace/src/lib.rs"]
-#[allow(dead_code, unused_attributes, fuzzy_provenance_casts)]
+#[allow(dead_code, unused_attributes, fuzzy_provenance_casts, unsafe_op_in_unsafe_fn)]
 mod backtrace_rs;
 
 // Re-export macros defined in core.

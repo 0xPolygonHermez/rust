@@ -1,5 +1,5 @@
 #![doc = include_str!("error.md")]
-#![stable(feature = "error_in_core", since = "CURRENT_RUSTC_VERSION")]
+#![stable(feature = "error_in_core", since = "1.81.0")]
 
 #[cfg(test)]
 mod tests;
@@ -1008,7 +1008,14 @@ impl<'a> Iterator for Source<'a> {
         self.current = self.current.and_then(Error::source);
         current
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        if self.current.is_some() { (1, None) } else { (0, Some(0)) }
+    }
 }
+
+#[unstable(feature = "error_iter", issue = "58520")]
+impl<'a> crate::iter::FusedIterator for Source<'a> {}
 
 #[stable(feature = "error_by_ref", since = "1.51.0")]
 impl<'a, T: Error + ?Sized> Error for &'a T {

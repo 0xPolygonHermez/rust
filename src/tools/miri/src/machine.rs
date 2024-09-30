@@ -30,6 +30,7 @@ use rustc_target::spec::abi::Abi;
 
 use crate::{
     concurrency::{
+        cpu_affinity::{self, CpuAffinityMask},
         data_race::{self, NaReadType, NaWriteType},
         weak_memory,
     },
@@ -471,6 +472,12 @@ pub struct MiriMachine<'tcx> {
 
     /// The set of threads.
     pub(crate) threads: ThreadManager<'tcx>,
+
+    /// Stores which thread is eligible to run on which CPUs.
+    /// This has no effect at all, it is just tracked to produce the correct result
+    /// in `sched_getaffinity`
+    pub(crate) thread_cpu_affinity: FxHashMap<ThreadId, CpuAffinityMask>,
+
     /// The state of the primitive synchronization objects.
     pub(crate) sync: SynchronizationObjects,
 
@@ -627,6 +634,18 @@ impl<'tcx> MiriMachine<'tcx> {
         let stack_addr = if tcx.pointer_size().bits() < 32 { page_size } else { page_size * 32 };
         let stack_size =
             if tcx.pointer_size().bits() < 32 { page_size * 4 } else { page_size * 16 };
+        assert!(
+            usize::try_from(config.num_cpus).unwrap() <= cpu_affinity::MAX_CPUS,
+            "miri only supports up to {} CPUs, but {} were configured",
+            cpu_affinity::MAX_CPUS,
+            config.num_cpus
+        );
+        let threads = ThreadManager::default();
+        let mut thread_cpu_affinity = FxHashMap::default();
+        if matches!(&*tcx.sess.target.os, "linux" | "freebsd" | "android") {
+            thread_cpu_affinity
+                .insert(threads.active_thread(), CpuAffinityMask::new(&layout_cx, config.num_cpus));
+        }
         MiriMachine {
             tcx,
             borrow_tracker,
@@ -644,7 +663,8 @@ impl<'tcx> MiriMachine<'tcx> {
             fds: shims::FdTable::new(config.mute_stdout_stderr),
             dirs: Default::default(),
             layouts,
-            threads: ThreadManager::default(),
+            threads,
+            thread_cpu_affinity,
             sync: SynchronizationObjects::default(),
             static_roots: Vec::new(),
             profiler,
@@ -765,6 +785,7 @@ impl VisitProvenance for MiriMachine<'_> {
         #[rustfmt::skip]
         let MiriMachine {
             threads,
+            thread_cpu_affinity: _,
             sync: _,
             tls,
             env_vars,
@@ -954,7 +975,7 @@ impl<'tcx> Machine<'tcx> for MiriMachine<'tcx> {
             // foreign function
             // Any needed call to `goto_block` will be performed by `emulate_foreign_item`.
             let args = ecx.copy_fn_args(args); // FIXME: Should `InPlace` arguments be reset to uninit?
-            let link_name = ecx.item_link_name(instance.def_id());
+            let link_name = Symbol::intern(ecx.tcx.symbol_name(instance).name);
             return ecx.emulate_foreign_item(link_name, abi, &args, dest, ret, unwind);
         }
 
@@ -1050,7 +1071,7 @@ impl<'tcx> Machine<'tcx> for MiriMachine<'tcx> {
         ecx: &MiriInterpCx<'tcx>,
         def_id: DefId,
     ) -> InterpResult<'tcx, StrictPointer> {
-        let link_name = ecx.item_link_name(def_id);
+        let link_name = Symbol::intern(ecx.tcx.symbol_name(Instance::mono(*ecx.tcx, def_id)).name);
         if let Some(&ptr) = ecx.machine.extern_statics.get(&link_name) {
             // Various parts of the engine rely on `get_alloc_info` for size and alignment
             // information. That uses the type information of this static.
@@ -1434,7 +1455,7 @@ impl<'tcx> Machine<'tcx> for MiriMachine<'tcx> {
         ecx: &mut InterpCx<'tcx, Self>,
         frame: Frame<'tcx, Provenance, FrameExtra<'tcx>>,
         unwinding: bool,
-    ) -> InterpResult<'tcx, StackPopJump> {
+    ) -> InterpResult<'tcx, ReturnAction> {
         if frame.extra.is_user_relevant {
             // All that we store is whether or not the frame we just removed is local, so now we
             // have no idea where the next topmost local frame is. So we recompute it.

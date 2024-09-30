@@ -155,7 +155,7 @@ pub(crate) fn codegen_const_value<'tcx>(
                             fx.bcx.ins().global_value(fx.pointer_type, local_data_id)
                         }
                     }
-                    GlobalAlloc::Function(instance) => {
+                    GlobalAlloc::Function { instance, .. } => {
                         let func_id = crate::abi::import_function(fx.tcx, fx.module, instance);
                         let local_func_id =
                             fx.module.declare_func_in_func(func_id, &mut fx.bcx.func);
@@ -351,7 +351,9 @@ fn define_all_allocs(tcx: TyCtxt<'_>, module: &mut dyn Module, cx: &mut Constant
             TodoItem::Alloc(alloc_id) => {
                 let alloc = match tcx.global_alloc(alloc_id) {
                     GlobalAlloc::Memory(alloc) => alloc,
-                    GlobalAlloc::Function(_) | GlobalAlloc::Static(_) | GlobalAlloc::VTable(..) => {
+                    GlobalAlloc::Function { .. }
+                    | GlobalAlloc::Static(_)
+                    | GlobalAlloc::VTable(..) => {
                         unreachable!()
                     }
                 };
@@ -383,15 +385,43 @@ fn define_all_allocs(tcx: TyCtxt<'_>, module: &mut dyn Module, cx: &mut Constant
 
         if let Some(section_name) = section_name {
             let (segment_name, section_name) = if tcx.sess.target.is_like_osx {
-                let section_name = section_name.as_str();
-                if let Some(names) = section_name.split_once(',') {
-                    names
-                } else {
+                // See https://github.com/llvm/llvm-project/blob/main/llvm/lib/MC/MCSectionMachO.cpp
+                let mut parts = section_name.as_str().split(',');
+                let Some(segment_name) = parts.next() else {
                     tcx.dcx().fatal(format!(
                         "#[link_section = \"{}\"] is not valid for macos target: must be segment and section separated by comma",
                         section_name
                     ));
+                };
+                let Some(section_name) = parts.next() else {
+                    tcx.dcx().fatal(format!(
+                        "#[link_section = \"{}\"] is not valid for macos target: must be segment and section separated by comma",
+                        section_name
+                    ));
+                };
+                if section_name.len() > 16 {
+                    tcx.dcx().fatal(format!(
+                        "#[link_section = \"{}\"] is not valid for macos target: section name bigger than 16 bytes",
+                        section_name
+                    ));
                 }
+                let section_type = parts.next().unwrap_or("regular");
+                if section_type != "regular" && section_type != "cstring_literals" {
+                    tcx.dcx().fatal(format!(
+                        "#[link_section = \"{}\"] is not supported: unsupported section type {}",
+                        section_name, section_type,
+                    ));
+                }
+                let _attrs = parts.next();
+                if parts.next().is_some() {
+                    tcx.dcx().fatal(format!(
+                        "#[link_section = \"{}\"] is not valid for macos target: too many components",
+                        section_name
+                    ));
+                }
+                // FIXME(bytecodealliance/wasmtime#8901) set S_CSTRING_LITERALS section type when
+                // cstring_literals is specified
+                (segment_name, section_name)
             } else {
                 ("", section_name.as_str())
             };
@@ -415,7 +445,7 @@ fn define_all_allocs(tcx: TyCtxt<'_>, module: &mut dyn Module, cx: &mut Constant
 
             let reloc_target_alloc = tcx.global_alloc(alloc_id);
             let data_id = match reloc_target_alloc {
-                GlobalAlloc::Function(instance) => {
+                GlobalAlloc::Function { instance, .. } => {
                     assert_eq!(addend, 0);
                     let func_id =
                         crate::abi::import_function(tcx, module, instance.polymorphize(tcx));
@@ -565,6 +595,7 @@ pub(crate) fn mir_operand_get_const_val<'tcx>(
                     {
                         return None;
                     }
+                    TerminatorKind::TailCall { .. } => return None,
                     TerminatorKind::Call { .. } => {}
                 }
             }

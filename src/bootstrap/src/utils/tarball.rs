@@ -9,9 +9,9 @@ use std::path::{Path, PathBuf};
 
 use crate::core::builder::Builder;
 use crate::core::{build_steps::dist::distdir, builder::Kind};
-use crate::utils::channel;
 use crate::utils::exec::BootstrapCommand;
 use crate::utils::helpers::{move_file, t};
+use crate::utils::{channel, helpers};
 
 #[derive(Copy, Clone)]
 pub(crate) enum OverlayKind {
@@ -244,7 +244,7 @@ impl<'a> Tarball<'a> {
             cmd.arg("generate")
                 .arg("--image-dir")
                 .arg(&this.image_dir)
-                .arg(format!("--component-name={}", &component_name));
+                .arg(format!("--component-name={component_name}"));
 
             if let Some((dir, dirs)) = this.bulk_dirs.split_first() {
                 let mut arg = dir.as_os_str().to_os_string();
@@ -351,7 +351,35 @@ impl<'a> Tarball<'a> {
         };
 
         cmd.args(["--compression-profile", compression_profile]);
-        self.builder.run(cmd);
+
+        // We want to use a pinned modification time for files in the archive
+        // to achieve better reproducibility. However, using the same mtime for all
+        // releases is not ideal, because it can break e.g. Cargo mtime checking
+        // (https://github.com/rust-lang/rust/issues/125578).
+        // Therefore, we set mtime to the date of the latest commit (if we're managed
+        // by git). In this way, the archive will still be always the same for a given commit
+        // (achieving reproducibility), but it will also change between different commits and
+        // Rust versions, so that it won't break mtime-based caches.
+        //
+        // Note that this only overrides the mtime of files, not directories, due to the
+        // limitations of the tarballer tool. Directories will have their mtime set to 2006.
+
+        // Get the UTC timestamp of the last git commit, if we're under git.
+        // We need to use UTC, so that anyone who tries to rebuild from the same commit
+        // gets the same timestamp.
+        if self.builder.rust_info().is_managed_git_subrepository() {
+            // %ct means committer date
+            let timestamp = helpers::git(Some(&self.builder.src))
+                .capture_stdout()
+                .arg("log")
+                .arg("-1")
+                .arg("--format=%ct")
+                .run(self.builder)
+                .stdout();
+            cmd.args(["--override-file-mtime", timestamp.trim()]);
+        }
+
+        cmd.run(self.builder);
 
         // Ensure there are no symbolic links in the tarball. In particular,
         // rustup-toolchain-install-master and most versions of Windows can't handle symbolic links.

@@ -14,7 +14,7 @@
 // See https://github.com/rust-lang/rust/issues/66530
 
 //@ ignore-riscv64
-// FIXME: The riscv build container runs as root, and can always write
+// FIXME: The riscv64gc-gnu build container runs as root, and can always write
 // into `inaccessible/tmp`. Ideally, the riscv64-gnu docker container
 // would use a non-root user, but this leads to issues with
 // `mkfs.ext4 -d`, as well as mounting a loop device for the rootfs.
@@ -24,11 +24,11 @@
 // Reason: `set_readonly` has no effect on directories
 // and does not prevent modification.
 
-use run_make_support::{fs_wrapper, rustc, test_while_readonly};
+use run_make_support::{rfs, rustc, test_while_readonly};
 
 fn main() {
     // Create an inaccessible directory.
-    fs_wrapper::create_dir("inaccessible");
+    rfs::create_dir("inaccessible");
     test_while_readonly("inaccessible", || {
         // Run rustc with `-Z temps-dir` set to a directory *inside* the inaccessible one,
         // so that it can't create `tmp`.

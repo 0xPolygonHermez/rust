@@ -627,7 +627,7 @@ impl Step for Size {
 
     #[inline]
     unsafe fn forward_unchecked(start: Self, count: usize) -> Self {
-        Self::from_bytes(u64::forward_unchecked(start.bytes(), count))
+        Self::from_bytes(unsafe { u64::forward_unchecked(start.bytes(), count) })
     }
 
     #[inline]
@@ -642,7 +642,7 @@ impl Step for Size {
 
     #[inline]
     unsafe fn backward_unchecked(start: Self, count: usize) -> Self {
-        Self::from_bytes(u64::backward_unchecked(start.bytes(), count))
+        Self::from_bytes(unsafe { u64::backward_unchecked(start.bytes(), count) })
     }
 }
 
@@ -1429,7 +1429,7 @@ pub enum Variants<FieldIdx: Idx, VariantIdx: Idx> {
     /// Single enum variants, structs/tuples, unions, and all non-ADTs.
     Single { index: VariantIdx },
 
-    /// Enum-likes with more than one inhabited variant: each variant comes with
+    /// Enum-likes with more than one variant: each variant comes with
     /// a *discriminant* (usually the same as the variant index but the user can
     /// assign explicit discriminant values). That discriminant is encoded
     /// as a *tag* on the machine. The layout of each variant is

@@ -10,8 +10,11 @@ use crate::inherent::*;
 use crate::ir_print::IrPrint;
 use crate::lang_items::TraitSolverLangItem;
 use crate::relate::Relate;
+use crate::search_graph;
 use crate::solve::inspect::CanonicalGoalEvaluationStep;
-use crate::solve::{ExternalConstraintsData, PredefinedOpaquesData, SolverMode};
+use crate::solve::{
+    CanonicalInput, ExternalConstraintsData, PredefinedOpaquesData, QueryResult, SolverMode,
+};
 use crate::visit::{Flags, TypeSuperVisitable, TypeVisitable};
 use crate::{self as ty};
 
@@ -32,6 +35,7 @@ pub trait Interner:
 {
     type DefId: DefId<Self>;
     type LocalDefId: Copy + Debug + Hash + Eq + Into<Self::DefId> + TypeFoldable<Self>;
+    type Span: Copy + Debug + Hash + Eq + TypeFoldable<Self>;
 
     type GenericArgs: GenericArgs<Self>;
     type GenericArgsSlice: Copy + Debug + Hash + Eq + SliceLike<Item = Self::GenericArg>;
@@ -85,6 +89,13 @@ pub trait Interner:
     ) -> Self::ExternalConstraints;
 
     type DepNodeIndex;
+    type Tracked<T: Debug + Clone>: Debug;
+    fn mk_tracked<T: Debug + Clone>(
+        self,
+        data: T,
+        dep_node: Self::DepNodeIndex,
+    ) -> Self::Tracked<T>;
+    fn get_tracked<T: Debug + Clone>(self, tracked: &Self::Tracked<T>) -> T;
     fn with_cached_task<T>(self, task: impl FnOnce() -> T) -> (T, Self::DepNodeIndex);
 
     // Kinds of tys
@@ -109,7 +120,7 @@ pub trait Interner:
     type ParamConst: Copy + Debug + Hash + Eq + ParamLike;
     type BoundConst: Copy + Debug + Hash + Eq + BoundVarLike<Self>;
     type ValueConst: Copy + Debug + Hash + Eq;
-    type ExprConst: Copy + Debug + Hash + Eq + Relate<Self>;
+    type ExprConst: ExprConst<Self>;
 
     // Kinds of regions
     type Region: Region<Self>;
@@ -124,8 +135,11 @@ pub trait Interner:
     type Clause: Clause<Self>;
     type Clauses: Copy + Debug + Hash + Eq + TypeSuperVisitable<Self> + Flags;
 
-    type EvaluationCache: EvaluationCache<Self>;
-    fn evaluation_cache(self, mode: SolverMode) -> Self::EvaluationCache;
+    fn with_global_cache<R>(
+        self,
+        mode: SolverMode,
+        f: impl FnOnce(&mut search_graph::GlobalCache<Self>) -> R,
+    ) -> R;
 
     fn expand_abstract_consts<T: TypeFoldable<Self>>(self, t: T) -> T;
 
@@ -212,13 +226,20 @@ pub trait Interner:
     fn explicit_super_predicates_of(
         self,
         def_id: Self::DefId,
-    ) -> ty::EarlyBinder<Self, impl IntoIterator<Item = Self::Clause>>;
+    ) -> ty::EarlyBinder<Self, impl IntoIterator<Item = (Self::Clause, Self::Span)>>;
+
+    fn explicit_implied_predicates_of(
+        self,
+        def_id: Self::DefId,
+    ) -> ty::EarlyBinder<Self, impl IntoIterator<Item = (Self::Clause, Self::Span)>>;
 
     fn has_target_features(self, def_id: Self::DefId) -> bool;
 
     fn require_lang_item(self, lang_item: TraitSolverLangItem) -> Self::DefId;
 
     fn is_lang_item(self, def_id: Self::DefId, lang_item: TraitSolverLangItem) -> bool;
+
+    fn as_lang_item(self, def_id: Self::DefId) -> Option<TraitSolverLangItem>;
 
     fn associated_type_def_ids(self, def_id: Self::DefId) -> impl IntoIterator<Item = Self::DefId>;
 
@@ -243,14 +264,9 @@ pub trait Interner:
 
     fn trait_is_object_safe(self, trait_def_id: Self::DefId) -> bool;
 
+    fn trait_is_fundamental(self, def_id: Self::DefId) -> bool;
+
     fn trait_may_be_implemented_via_object(self, trait_def_id: Self::DefId) -> bool;
-
-    fn fn_trait_kind_from_def_id(self, trait_def_id: Self::DefId) -> Option<ty::ClosureKind>;
-
-    fn async_fn_trait_kind_from_def_id(self, trait_def_id: Self::DefId) -> Option<ty::ClosureKind>;
-
-    fn supertrait_def_ids(self, trait_def_id: Self::DefId)
-    -> impl IntoIterator<Item = Self::DefId>;
 
     fn delay_bug(self, msg: impl ToString) -> Self::ErrorGuaranteed;
 
@@ -269,6 +285,11 @@ pub trait Interner:
         param_env: Self::ParamEnv,
         placeholder: Self::PlaceholderConst,
     ) -> Self::Ty;
+
+    fn anonymize_bound_vars<T: TypeFoldable<Self>>(
+        self,
+        binder: ty::Binder<Self, T>,
+    ) -> ty::Binder<Self, T>;
 }
 
 /// Imagine you have a function `F: FnOnce(&[T]) -> R`, plus an iterator `iter`
@@ -363,5 +384,34 @@ impl<T, R, E> CollectAndApply<T, R> for Result<T, E> {
             }
             _ => f(&iter.collect::<Result<SmallVec<[_; 8]>, _>>()?),
         })
+    }
+}
+
+impl<I: Interner> search_graph::Cx for I {
+    type ProofTree = Option<I::CanonicalGoalEvaluationStepRef>;
+    type Input = CanonicalInput<I>;
+    type Result = QueryResult<I>;
+
+    type DepNodeIndex = I::DepNodeIndex;
+    type Tracked<T: Debug + Clone> = I::Tracked<T>;
+    fn mk_tracked<T: Debug + Clone>(
+        self,
+        data: T,
+        dep_node_index: I::DepNodeIndex,
+    ) -> I::Tracked<T> {
+        I::mk_tracked(self, data, dep_node_index)
+    }
+    fn get_tracked<T: Debug + Clone>(self, tracked: &I::Tracked<T>) -> T {
+        I::get_tracked(self, tracked)
+    }
+    fn with_cached_task<T>(self, task: impl FnOnce() -> T) -> (T, I::DepNodeIndex) {
+        I::with_cached_task(self, task)
+    }
+    fn with_global_cache<R>(
+        self,
+        mode: SolverMode,
+        f: impl FnOnce(&mut search_graph::GlobalCache<Self>) -> R,
+    ) -> R {
+        I::with_global_cache(self, mode, f)
     }
 }

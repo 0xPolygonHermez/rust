@@ -3,7 +3,9 @@ use std::collections::BTreeSet;
 use rustc_data_structures::graph::DirectedGraph;
 use rustc_index::bit_set::BitSet;
 use rustc_index::IndexVec;
-use rustc_middle::mir::coverage::{BlockMarkerId, BranchSpan, ConditionInfo, CoverageKind};
+use rustc_middle::mir::coverage::{
+    BlockMarkerId, BranchSpan, ConditionInfo, CoverageInfoHi, CoverageKind,
+};
 use rustc_middle::mir::{self, BasicBlock, StatementKind};
 use rustc_middle::ty::TyCtxt;
 use rustc_span::Span;
@@ -54,6 +56,10 @@ pub(super) struct MCDCDecision {
 
 #[derive(Default)]
 pub(super) struct ExtractedMappings {
+    /// Store our own copy of [`CoverageGraph::num_nodes`], so that we don't
+    /// need access to the whole graph when allocating per-BCB data. This is
+    /// only public so that other code can still use exhaustive destructuring.
+    pub(super) num_bcbs: usize,
     pub(super) code_mappings: Vec<CodeMapping>,
     pub(super) branch_pairs: Vec<BranchPair>,
     pub(super) mcdc_bitmap_bytes: u32,
@@ -104,6 +110,7 @@ pub(super) fn extract_all_mapping_info_from_mir<'tcx>(
     );
 
     ExtractedMappings {
+        num_bcbs: basic_coverage_blocks.num_nodes(),
         code_mappings,
         branch_pairs,
         mcdc_bitmap_bytes,
@@ -113,12 +120,10 @@ pub(super) fn extract_all_mapping_info_from_mir<'tcx>(
 }
 
 impl ExtractedMappings {
-    pub(super) fn all_bcbs_with_counter_mappings(
-        &self,
-        basic_coverage_blocks: &CoverageGraph, // Only used for allocating a correctly-sized set
-    ) -> BitSet<BasicCoverageBlock> {
+    pub(super) fn all_bcbs_with_counter_mappings(&self) -> BitSet<BasicCoverageBlock> {
         // Fully destructure self to make sure we don't miss any fields that have mappings.
         let Self {
+            num_bcbs,
             code_mappings,
             branch_pairs,
             mcdc_bitmap_bytes: _,
@@ -127,7 +132,7 @@ impl ExtractedMappings {
         } = self;
 
         // Identify which BCBs have one or more mappings.
-        let mut bcbs_with_counter_mappings = BitSet::new_empty(basic_coverage_blocks.num_nodes());
+        let mut bcbs_with_counter_mappings = BitSet::new_empty(*num_bcbs);
         let mut insert = |bcb| {
             bcbs_with_counter_mappings.insert(bcb);
         };
@@ -154,15 +159,24 @@ impl ExtractedMappings {
 
         bcbs_with_counter_mappings
     }
+
+    /// Returns the set of BCBs that have one or more `Code` mappings.
+    pub(super) fn bcbs_with_ordinary_code_mappings(&self) -> BitSet<BasicCoverageBlock> {
+        let mut bcbs = BitSet::new_empty(self.num_bcbs);
+        for &CodeMapping { span: _, bcb } in &self.code_mappings {
+            bcbs.insert(bcb);
+        }
+        bcbs
+    }
 }
 
 fn resolve_block_markers(
-    branch_info: &mir::coverage::BranchInfo,
+    coverage_info_hi: &CoverageInfoHi,
     mir_body: &mir::Body<'_>,
 ) -> IndexVec<BlockMarkerId, Option<BasicBlock>> {
     let mut block_markers = IndexVec::<BlockMarkerId, Option<BasicBlock>>::from_elem_n(
         None,
-        branch_info.num_block_markers,
+        coverage_info_hi.num_block_markers,
     );
 
     // Fill out the mapping from block marker IDs to their enclosing blocks.
@@ -188,11 +202,11 @@ pub(super) fn extract_branch_pairs(
     hir_info: &ExtractedHirInfo,
     basic_coverage_blocks: &CoverageGraph,
 ) -> Vec<BranchPair> {
-    let Some(branch_info) = mir_body.coverage_branch_info.as_deref() else { return vec![] };
+    let Some(coverage_info_hi) = mir_body.coverage_info_hi.as_deref() else { return vec![] };
 
-    let block_markers = resolve_block_markers(branch_info, mir_body);
+    let block_markers = resolve_block_markers(coverage_info_hi, mir_body);
 
-    branch_info
+    coverage_info_hi
         .branch_spans
         .iter()
         .filter_map(|&BranchSpan { span: raw_span, true_marker, false_marker }| {
@@ -222,9 +236,9 @@ pub(super) fn extract_mcdc_mappings(
     mcdc_branches: &mut impl Extend<MCDCBranch>,
     mcdc_decisions: &mut impl Extend<MCDCDecision>,
 ) {
-    let Some(branch_info) = mir_body.coverage_branch_info.as_deref() else { return };
+    let Some(coverage_info_hi) = mir_body.coverage_info_hi.as_deref() else { return };
 
-    let block_markers = resolve_block_markers(branch_info, mir_body);
+    let block_markers = resolve_block_markers(coverage_info_hi, mir_body);
 
     let bcb_from_marker =
         |marker: BlockMarkerId| basic_coverage_blocks.bcb_from_bb(block_markers[marker]?);
@@ -243,7 +257,7 @@ pub(super) fn extract_mcdc_mappings(
             Some((span, true_bcb, false_bcb))
         };
 
-    mcdc_branches.extend(branch_info.mcdc_branch_spans.iter().filter_map(
+    mcdc_branches.extend(coverage_info_hi.mcdc_branch_spans.iter().filter_map(
         |&mir::coverage::MCDCBranchSpan {
              span: raw_span,
              condition_info,
@@ -257,7 +271,7 @@ pub(super) fn extract_mcdc_mappings(
         },
     ));
 
-    mcdc_decisions.extend(branch_info.mcdc_decision_spans.iter().filter_map(
+    mcdc_decisions.extend(coverage_info_hi.mcdc_decision_spans.iter().filter_map(
         |decision: &mir::coverage::MCDCDecisionSpan| {
             let span = unexpand_into_body_span(decision.span, body_span)?;
 

@@ -1,6 +1,6 @@
 //@ run-pass
 
-#![allow(dead_code, non_camel_case_types, non_upper_case_globals)]
+#![allow(dead_code, non_camel_case_types, non_upper_case_globals, unused_variables)]
 #![feature(macro_metavar_expr_concat)]
 
 macro_rules! create_things {
@@ -37,6 +37,61 @@ macro_rules! without_dollar_sign_is_an_ident {
     };
 }
 
+macro_rules! combinations {
+    ($ident:ident, $literal:literal, $tt_ident:tt, $tt_literal:tt) => {{
+        // tt ident
+        let ${concat($tt_ident, b)} = ();
+        let ${concat($tt_ident, _b)} = ();
+        let ${concat($tt_ident, "b")} = ();
+        let ${concat($tt_ident, $tt_ident)} = ();
+        let ${concat($tt_ident, $tt_literal)} = ();
+        let ${concat($tt_ident, $ident)} = ();
+        let ${concat($tt_ident, $literal)} = ();
+        // tt literal
+        let ${concat($tt_literal, b)} = ();
+        let ${concat($tt_literal, _b)} = ();
+        let ${concat($tt_literal, "b")} = ();
+        let ${concat($tt_literal, $tt_ident)} = ();
+        let ${concat($tt_literal, $tt_literal)} = ();
+        let ${concat($tt_literal, $ident)} = ();
+        let ${concat($tt_literal, $literal)} = ();
+
+        // ident (adhoc)
+        let ${concat(_b, b)} = ();
+        let ${concat(_b, _b)} = ();
+        let ${concat(_b, "b")} = ();
+        let ${concat(_b, $tt_ident)} = ();
+        let ${concat(_b, $tt_literal)} = ();
+        let ${concat(_b, $ident)} = ();
+        let ${concat(_b, $literal)} = ();
+        // ident (param)
+        let ${concat($ident, b)} = ();
+        let ${concat($ident, _b)} = ();
+        let ${concat($ident, "b")} = ();
+        let ${concat($ident, $tt_ident)} = ();
+        let ${concat($ident, $tt_literal)} = ();
+        let ${concat($ident, $ident)} = ();
+        let ${concat($ident, $literal)} = ();
+
+        // literal (adhoc)
+        let ${concat("a", b)} = ();
+        let ${concat("a", _b)} = ();
+        let ${concat("a", "b")} = ();
+        let ${concat("a", $tt_ident)} = ();
+        let ${concat("a", $tt_literal)} = ();
+        let ${concat("a", $ident)} = ();
+        let ${concat("a", $literal)} = ();
+        // literal (param)
+        let ${concat($literal, b)} = ();
+        let ${concat($literal, _b)} = ();
+        let ${concat($literal, "b")} = ();
+        let ${concat($literal, $tt_ident)} = ();
+        let ${concat($literal, $tt_literal)} = ();
+        let ${concat($literal, $ident)} = ();
+        let ${concat($literal, $literal)} = ();
+    }};
+}
+
 fn main() {
     create_things!(behold);
     behold_separated_idents_in_a_fn();
@@ -55,4 +110,6 @@ fn main() {
     without_dollar_sign_is_an_ident!(_123);
     assert_eq!(VARident, 1);
     assert_eq!(VAR_123, 2);
+
+    combinations!(_hello, "a", b, "b");
 }

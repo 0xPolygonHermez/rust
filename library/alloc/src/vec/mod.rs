@@ -1473,6 +1473,9 @@ impl<T, A: Allocator> Vec<T, A> {
     /// // 2. `0 <= capacity` always holds whatever `capacity` is.
     /// unsafe {
     ///     vec.set_len(0);
+    /// #   // FIXME(https://github.com/rust-lang/miri/issues/3670):
+    /// #   // use -Zmiri-disable-leak-check instead of unleaking in tests meant to leak.
+    /// #   vec.set_len(3);
     /// }
     /// ```
     ///
@@ -2391,6 +2394,9 @@ impl<T, A: Allocator> Vec<T, A> {
     /// let static_ref: &'static mut [usize] = x.leak();
     /// static_ref[0] += 1;
     /// assert_eq!(static_ref, &[2, 2, 3]);
+    /// # // FIXME(https://github.com/rust-lang/miri/issues/3670):
+    /// # // use -Zmiri-disable-leak-check instead of unleaking in tests meant to leak.
+    /// # drop(unsafe { Box::from_raw(static_ref) });
     /// ```
     #[stable(feature = "vec_leak", since = "1.47.0")]
     #[inline]
@@ -3048,6 +3054,16 @@ impl<T, A: Allocator> Extend<T> for Vec<T, A> {
     fn extend_reserve(&mut self, additional: usize) {
         self.reserve(additional);
     }
+
+    #[inline]
+    unsafe fn extend_one_unchecked(&mut self, item: T) {
+        // SAFETY: Our preconditions ensure the space has been reserved, and `extend_reserve` is implemented correctly.
+        unsafe {
+            let len = self.len();
+            ptr::write(self.as_mut_ptr().add(len), item);
+            self.set_len(len + 1);
+        }
+    }
 }
 
 impl<T, A: Allocator> Vec<T, A> {
@@ -3243,6 +3259,16 @@ impl<'a, T: Copy + 'a, A: Allocator> Extend<&'a T> for Vec<T, A> {
     #[inline]
     fn extend_reserve(&mut self, additional: usize) {
         self.reserve(additional);
+    }
+
+    #[inline]
+    unsafe fn extend_one_unchecked(&mut self, &item: &'a T) {
+        // SAFETY: Our preconditions ensure the space has been reserved, and `extend_reserve` is implemented correctly.
+        unsafe {
+            let len = self.len();
+            ptr::write(self.as_mut_ptr().add(len), item);
+            self.set_len(len + 1);
+        }
     }
 }
 

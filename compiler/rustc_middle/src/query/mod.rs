@@ -1261,6 +1261,7 @@ rustc_queries! {
         desc { |tcx| "looking up function parameter names for `{}`", tcx.def_path_str(def_id) }
         separate_provide_extern
     }
+
     /// Gets the rendered value of the specified constant or associated constant.
     /// Used by rustdoc.
     query rendered_const(def_id: DefId) -> &'tcx String {
@@ -1268,6 +1269,13 @@ rustc_queries! {
         desc { |tcx| "rendering constant initializer of `{}`", tcx.def_path_str(def_id) }
         separate_provide_extern
     }
+
+    /// Gets the rendered precise capturing args for an opaque for use in rustdoc.
+    query rendered_precise_capturing_args(def_id: DefId) -> Option<&'tcx [Symbol]> {
+        desc { |tcx| "rendering precise capturing args for `{}`", tcx.def_path_str(def_id) }
+        separate_provide_extern
+    }
+
     query impl_parent(def_id: DefId) -> Option<DefId> {
         desc { |tcx| "computing specialization parent impl of `{}`", tcx.def_path_str(def_id) }
         separate_provide_extern
@@ -2279,10 +2287,6 @@ rustc_queries! {
     query cross_crate_inlinable(def_id: DefId) -> bool {
         desc { "whether the item should be made inlinable across crates" }
         separate_provide_extern
-    }
-
-    query find_field((def_id, ident): (DefId, rustc_span::symbol::Ident)) -> Option<rustc_target::abi::FieldIdx> {
-        desc { |tcx| "find the index of maybe nested field `{ident}` in `{}`", tcx.def_path_str(def_id) }
     }
 }
 

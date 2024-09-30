@@ -1519,6 +1519,74 @@ impl PathBuf {
         true
     }
 
+    /// Append [`self.extension`] with `extension`.
+    ///
+    /// Returns `false` and does nothing if [`self.file_name`] is [`None`],
+    /// returns `true` and updates the extension otherwise.
+    ///
+    /// # Caveats
+    ///
+    /// The appended `extension` may contain dots and will be used in its entirety,
+    /// but only the part after the final dot will be reflected in
+    /// [`self.extension`].
+    ///
+    /// See the examples below.
+    ///
+    /// [`self.file_name`]: Path::file_name
+    /// [`self.extension`]: Path::extension
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(path_add_extension)]
+    ///
+    /// use std::path::{Path, PathBuf};
+    ///
+    /// let mut p = PathBuf::from("/feel/the");
+    ///
+    /// p.add_extension("formatted");
+    /// assert_eq!(Path::new("/feel/the.formatted"), p.as_path());
+    ///
+    /// p.add_extension("dark.side");
+    /// assert_eq!(Path::new("/feel/the.formatted.dark.side"), p.as_path());
+    ///
+    /// p.set_extension("cookie");
+    /// assert_eq!(Path::new("/feel/the.formatted.dark.cookie"), p.as_path());
+    ///
+    /// p.set_extension("");
+    /// assert_eq!(Path::new("/feel/the.formatted.dark"), p.as_path());
+    ///
+    /// p.add_extension("");
+    /// assert_eq!(Path::new("/feel/the.formatted.dark"), p.as_path());
+    /// ```
+    #[unstable(feature = "path_add_extension", issue = "127292")]
+    pub fn add_extension<S: AsRef<OsStr>>(&mut self, extension: S) -> bool {
+        self._add_extension(extension.as_ref())
+    }
+
+    fn _add_extension(&mut self, extension: &OsStr) -> bool {
+        let file_name = match self.file_name() {
+            None => return false,
+            Some(f) => f.as_encoded_bytes(),
+        };
+
+        let new = extension;
+        if !new.is_empty() {
+            // truncate until right after the file name
+            // this is necessary for trimming the trailing slash
+            let end_file_name = file_name[file_name.len()..].as_ptr().addr();
+            let start = self.inner.as_encoded_bytes().as_ptr().addr();
+            self.inner.truncate(end_file_name.wrapping_sub(start));
+
+            // append the new extension
+            self.inner.reserve_exact(new.len() + 1);
+            self.inner.push(OsStr::new("."));
+            self.inner.push(new);
+        }
+
+        true
+    }
+
     /// Yields a mutable reference to the underlying [`OsString`] instance.
     ///
     /// # Examples
@@ -2656,6 +2724,32 @@ impl Path {
         new_path
     }
 
+    /// Creates an owned [`PathBuf`] like `self` but with the extension added.
+    ///
+    /// See [`PathBuf::add_extension`] for more details.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(path_add_extension)]
+    ///
+    /// use std::path::{Path, PathBuf};
+    ///
+    /// let path = Path::new("foo.rs");
+    /// assert_eq!(path.with_added_extension("txt"), PathBuf::from("foo.rs.txt"));
+    ///
+    /// let path = Path::new("foo.tar.gz");
+    /// assert_eq!(path.with_added_extension(""), PathBuf::from("foo.tar.gz"));
+    /// assert_eq!(path.with_added_extension("xz"), PathBuf::from("foo.tar.gz.xz"));
+    /// assert_eq!(path.with_added_extension("").with_added_extension("txt"), PathBuf::from("foo.tar.gz.txt"));
+    /// ```
+    #[unstable(feature = "path_add_extension", issue = "127292")]
+    pub fn with_added_extension<S: AsRef<OsStr>>(&self, extension: S) -> PathBuf {
+        let mut new_path = self.to_path_buf();
+        new_path.add_extension(extension);
+        new_path
+    }
+
     /// Produces an iterator over the [`Component`]s of the path.
     ///
     /// When parsing the path, there is a small amount of normalization:
@@ -3098,15 +3192,19 @@ impl Hash for Path {
         let bytes = &bytes[prefix_len..];
 
         let mut component_start = 0;
-        let mut bytes_hashed = 0;
+        // track some extra state to avoid prefix collisions.
+        // ["foo", "bar"] and ["foobar"], will have the same payload bytes
+        // but result in different chunk_bits
+        let mut chunk_bits: usize = 0;
 
         for i in 0..bytes.len() {
             let is_sep = if verbatim { is_verbatim_sep(bytes[i]) } else { is_sep_byte(bytes[i]) };
             if is_sep {
                 if i > component_start {
                     let to_hash = &bytes[component_start..i];
+                    chunk_bits = chunk_bits.wrapping_add(to_hash.len());
+                    chunk_bits = chunk_bits.rotate_right(2);
                     h.write(to_hash);
-                    bytes_hashed += to_hash.len();
                 }
 
                 // skip over separator and optionally a following CurDir item
@@ -3127,11 +3225,12 @@ impl Hash for Path {
 
         if component_start < bytes.len() {
             let to_hash = &bytes[component_start..];
+            chunk_bits = chunk_bits.wrapping_add(to_hash.len());
+            chunk_bits = chunk_bits.rotate_right(2);
             h.write(to_hash);
-            bytes_hashed += to_hash.len();
         }
 
-        h.write_usize(bytes_hashed);
+        h.write_usize(chunk_bits);
     }
 }
 

@@ -119,7 +119,6 @@
 #![feature(const_bigint_helper_methods)]
 #![feature(const_black_box)]
 #![feature(const_cell_into_inner)]
-#![feature(const_char_from_u32_unchecked)]
 #![feature(const_eval_select)]
 #![feature(const_exact_div)]
 #![feature(const_float_bits_conv)]
@@ -395,6 +394,8 @@ pub mod panicking;
 #[unstable(feature = "core_pattern_types", issue = "none")]
 pub mod pat;
 pub mod pin;
+#[unstable(feature = "new_range_api", issue = "125687")]
+pub mod range;
 pub mod result;
 pub mod sync;
 

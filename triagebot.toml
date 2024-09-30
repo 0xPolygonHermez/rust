@@ -221,6 +221,13 @@ trigger_files = [
     "library/std/src/os/android"
 ]
 
+[autolabel."O-apple"]
+trigger_files = [
+    "library/std/src/os/darwin",
+    "library/std/src/sys/pal/unix/thread_parking/darwin.rs",
+    "compiler/rustc_target/src/spec/base/apple",
+]
+
 [autolabel."O-fuchsia"]
 trigger_files = [
     "library/std/src/os/fuchsia"
@@ -250,8 +257,6 @@ trigger_files = [
 [autolabel."O-macos"]
 trigger_files = [
     "library/std/src/os/macos",
-    "library/std/src/sys/pal/unix/thread_parking/darwin.rs",
-    "compiler/rustc_target/src/spec/base/apple",
 ]
 
 [autolabel."O-netbsd"]
@@ -299,20 +304,10 @@ trigger_files = [
     "library/std/src/os/wasm"
 ]
 
-[autolabel."O-watchos"]
-trigger_files = [
-    "library/std/src/os/watchos"
-]
-
 [autolabel."O-windows"]
 trigger_files = [
     "library/std/src/sys/pal/windows",
     "library/std/src/os/windows"
-]
-
-[autolabel."O-visionos"]
-trigger_files = [
-    "library/std/src/os/visionos"
 ]
 
 [autolabel."T-bootstrap"]
@@ -910,7 +905,7 @@ cc = ["@kobzol"]
 [assign]
 warn_non_default_branch = true
 contributing_url = "https://rustc-dev-guide.rust-lang.org/getting-started.html"
-users_on_vacation = ["jyn514"]
+users_on_vacation = ["jyn514", "jhpratt", "oli-obk"]
 
 [assign.adhoc_groups]
 compiler-team = [
@@ -933,6 +928,7 @@ compiler-team-contributors = [
     "@fee1-dead",
     "@jieyouxu",
     "@BoxyUwU",
+    "@chenyukang",
 ]
 compiler = [
     "compiler-team",
@@ -941,18 +937,17 @@ compiler = [
 libs = [
     "@cuviper",
     "@Mark-Simulacrum",
-    "@m-ou-se",
     "@Amanieu",
     "@Nilstrieb",
     "@workingjubilee",
     "@joboet",
     "@jhpratt",
+    "@tgross35",
 ]
 bootstrap = [
     "@Mark-Simulacrum",
     "@albertlarsan68",
     "@onur-ozkan",
-    "@clubby789",
     "@kobzol",
 ]
 infra-ci = [
@@ -982,6 +977,7 @@ diagnostics = [
     "@estebank",
     "@oli-obk",
     "@TaKO8Ki",
+    "@chenyukang",
 ]
 parser = [
     "@compiler-errors",
@@ -995,6 +991,7 @@ lexer = [
     "@nnethercote",
     "@petrochenkov",
     "@estebank",
+    "@chenyukang",
 ]
 arena = [
     "@nnethercote",
@@ -1051,7 +1048,6 @@ project-const-traits = [
 project-stable-mir = [
     "@celinval",
     "@oli-obk",
-    "@spastorino",
     "@ouz-a",
 ]
 

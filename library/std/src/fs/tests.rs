@@ -683,7 +683,7 @@ fn recursive_rmdir_toctou() {
     let drop_canary_arc = Arc::new(());
     let drop_canary_weak = Arc::downgrade(&drop_canary_arc);
 
-    eprintln!("x: {:?}", &victim_del_path);
+    eprintln!("x: {victim_del_path:?}");
 
     // victim just continuously removes `victim_del`
     thread::spawn(move || {
@@ -1638,16 +1638,8 @@ fn rename_directory() {
 
 #[test]
 fn test_file_times() {
-    #[cfg(target_os = "ios")]
-    use crate::os::ios::fs::FileTimesExt;
-    #[cfg(target_os = "macos")]
-    use crate::os::macos::fs::FileTimesExt;
-    #[cfg(target_os = "tvos")]
-    use crate::os::tvos::fs::FileTimesExt;
-    #[cfg(target_os = "visionos")]
-    use crate::os::visionos::fs::FileTimesExt;
-    #[cfg(target_os = "watchos")]
-    use crate::os::watchos::fs::FileTimesExt;
+    #[cfg(target_vendor = "apple")]
+    use crate::os::darwin::fs::FileTimesExt;
     #[cfg(windows)]
     use crate::os::windows::fs::FileTimesExt;
 
@@ -1693,16 +1685,7 @@ fn test_file_times() {
 #[test]
 #[cfg(target_vendor = "apple")]
 fn test_file_times_pre_epoch_with_nanos() {
-    #[cfg(target_os = "ios")]
-    use crate::os::ios::fs::FileTimesExt;
-    #[cfg(target_os = "macos")]
-    use crate::os::macos::fs::FileTimesExt;
-    #[cfg(target_os = "tvos")]
-    use crate::os::tvos::fs::FileTimesExt;
-    #[cfg(target_os = "visionos")]
-    use crate::os::visionos::fs::FileTimesExt;
-    #[cfg(target_os = "watchos")]
-    use crate::os::watchos::fs::FileTimesExt;
+    use crate::os::darwin::fs::FileTimesExt;
 
     let tmp = tmpdir();
     let file = File::create(tmp.join("foo")).unwrap();

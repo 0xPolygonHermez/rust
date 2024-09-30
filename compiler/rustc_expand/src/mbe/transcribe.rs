@@ -6,13 +6,16 @@ use crate::mbe::macro_parser::{NamedMatch, NamedMatch::*};
 use crate::mbe::metavar_expr::{MetaVarExprConcatElem, RAW_IDENT_ERR};
 use crate::mbe::{self, KleeneOp, MetaVarExpr};
 use rustc_ast::mut_visit::{self, MutVisitor};
-use rustc_ast::token::IdentIsRaw;
-use rustc_ast::token::{self, Delimiter, Token, TokenKind};
+use rustc_ast::token::{self, Delimiter, Nonterminal, Token, TokenKind};
+use rustc_ast::token::{IdentIsRaw, Lit, LitKind};
 use rustc_ast::tokenstream::{DelimSpacing, DelimSpan, Spacing, TokenStream, TokenTree};
+use rustc_ast::ExprKind;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_errors::{pluralize, Diag, DiagCtxtHandle, PResult};
+use rustc_parse::lexer::nfc_normalize;
 use rustc_parse::parser::ParseNtResult;
 use rustc_session::parse::ParseSess;
+use rustc_session::parse::SymbolGallery;
 use rustc_span::hygiene::{LocalExpnId, Transparency};
 use rustc_span::symbol::{sym, Ident, MacroRulesNormalizedIdent};
 use rustc_span::{with_metavar_spans, Span, Symbol, SyntaxContext};
@@ -312,7 +315,16 @@ pub(super) fn transcribe<'a>(
 
             // Replace meta-variable expressions with the result of their expansion.
             mbe::TokenTree::MetaVarExpr(sp, expr) => {
-                transcribe_metavar_expr(dcx, expr, interp, &mut marker, &repeats, &mut result, sp)?;
+                transcribe_metavar_expr(
+                    dcx,
+                    expr,
+                    interp,
+                    &mut marker,
+                    &repeats,
+                    &mut result,
+                    sp,
+                    &psess.symbol_gallery,
+                )?;
             }
 
             // If we are entering a new delimiter, we push its contents to the `stack` to be
@@ -669,6 +681,7 @@ fn transcribe_metavar_expr<'a>(
     repeats: &[(usize, usize)],
     result: &mut Vec<TokenTree>,
     sp: &DelimSpan,
+    symbol_gallery: &SymbolGallery,
 ) -> PResult<'a, ()> {
     let mut visited_span = || {
         let mut span = sp.entire();
@@ -679,17 +692,27 @@ fn transcribe_metavar_expr<'a>(
         MetaVarExpr::Concat(ref elements) => {
             let mut concatenated = String::new();
             for element in elements.into_iter() {
-                let string = match element {
-                    MetaVarExprConcatElem::Ident(ident) => ident.to_string(),
-                    MetaVarExprConcatElem::Var(ident) => extract_ident(dcx, *ident, interp)?,
+                let symbol = match element {
+                    MetaVarExprConcatElem::Ident(elem) => elem.name,
+                    MetaVarExprConcatElem::Literal(elem) => *elem,
+                    MetaVarExprConcatElem::Var(elem) => extract_var_symbol(dcx, *elem, interp)?,
                 };
-                concatenated.push_str(&string);
+                concatenated.push_str(symbol.as_str());
             }
+            let symbol = nfc_normalize(&concatenated);
+            let concatenated_span = visited_span();
+            if !rustc_lexer::is_ident(symbol.as_str()) {
+                return Err(dcx.struct_span_err(
+                    concatenated_span,
+                    "`${concat(..)}` is not generating a valid identifier",
+                ));
+            }
+            symbol_gallery.insert(symbol, concatenated_span);
             // The current implementation marks the span as coming from the macro regardless of
             // contexts of the concatenated identifiers but this behavior may change in the
             // future.
             result.push(TokenTree::Token(
-                Token::from_ast_ident(Ident::new(Symbol::intern(&concatenated), visited_span())),
+                Token::from_ast_ident(Ident::new(symbol, concatenated_span)),
                 Spacing::Alone,
             ));
         }
@@ -728,32 +751,42 @@ fn transcribe_metavar_expr<'a>(
     Ok(())
 }
 
-/// Extracts an identifier that can be originated from a `$var:ident` variable or from a token tree.
-fn extract_ident<'a>(
+/// Extracts an metavariable symbol that can be an identifier, a token tree or a literal.
+fn extract_var_symbol<'a>(
     dcx: DiagCtxtHandle<'a>,
     ident: Ident,
     interp: &FxHashMap<MacroRulesNormalizedIdent, NamedMatch>,
-) -> PResult<'a, String> {
+) -> PResult<'a, Symbol> {
     if let NamedMatch::MatchedSingle(pnr) = matched_from_ident(dcx, ident, interp)? {
         if let ParseNtResult::Ident(nt_ident, is_raw) = pnr {
             if let IdentIsRaw::Yes = is_raw {
                 return Err(dcx.struct_span_err(ident.span, RAW_IDENT_ERR));
             }
-            return Ok(nt_ident.to_string());
+            return Ok(nt_ident.name);
         }
-        if let ParseNtResult::Tt(TokenTree::Token(
-            Token { kind: TokenKind::Ident(token_ident, is_raw), .. },
-            _,
-        )) = pnr
-        {
-            if let IdentIsRaw::Yes = is_raw {
-                return Err(dcx.struct_span_err(ident.span, RAW_IDENT_ERR));
+
+        if let ParseNtResult::Tt(TokenTree::Token(Token { kind, .. }, _)) = pnr {
+            if let TokenKind::Ident(symbol, is_raw) = kind {
+                if let IdentIsRaw::Yes = is_raw {
+                    return Err(dcx.struct_span_err(ident.span, RAW_IDENT_ERR));
+                }
+                return Ok(*symbol);
             }
-            return Ok(token_ident.to_string());
+
+            if let TokenKind::Literal(Lit { kind: LitKind::Str, symbol, suffix: None }) = kind {
+                return Ok(*symbol);
+            }
+        }
+
+        if let ParseNtResult::Nt(nt) = pnr
+            && let Nonterminal::NtLiteral(expr) = &**nt
+            && let ExprKind::Lit(Lit { kind: LitKind::Str, symbol, suffix: None }) = &expr.kind
+        {
+            return Ok(*symbol);
         }
     }
-    Err(dcx.struct_span_err(
-        ident.span,
-        "`${concat(..)}` currently only accepts identifiers or meta-variables as parameters",
-    ))
+    Err(dcx
+        .struct_err("metavariables of `${concat(..)}` must be of type `ident`, `literal` or `tt`")
+        .with_note("currently only string literals are supported")
+        .with_span(ident.span))
 }

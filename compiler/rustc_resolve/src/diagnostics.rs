@@ -149,7 +149,7 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                     BuiltinLintDiag::AmbiguousGlobImports { diag },
                 );
             } else {
-                let mut err = struct_span_code_err!(self.dcx(), diag.span, E0659, "{}", &diag.msg);
+                let mut err = struct_span_code_err!(self.dcx(), diag.span, E0659, "{}", diag.msg);
                 report_ambiguity_error(&mut err, diag);
                 err.emit();
             }
@@ -371,6 +371,7 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
         };
 
         let mut suggestion = None;
+        let mut span = binding_span;
         match import.kind {
             ImportKind::Single { type_ns_only: true, .. } => {
                 suggestion = Some(format!("self as {suggested_name}"))
@@ -381,12 +382,13 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                 {
                     if let Ok(snippet) = self.tcx.sess.source_map().span_to_snippet(binding_span) {
                         if pos <= snippet.len() {
-                            suggestion = Some(format!(
-                                "{} as {}{}",
-                                &snippet[..pos],
-                                suggested_name,
-                                if snippet.ends_with(';') { ";" } else { "" }
-                            ))
+                            span = binding_span
+                                .with_lo(binding_span.lo() + BytePos(pos as u32))
+                                .with_hi(
+                                    binding_span.hi()
+                                        - BytePos(if snippet.ends_with(';') { 1 } else { 0 }),
+                                );
+                            suggestion = Some(format!(" as {suggested_name}"));
                         }
                     }
                 }
@@ -402,9 +404,9 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
         }
 
         if let Some(suggestion) = suggestion {
-            err.subdiagnostic(ChangeImportBindingSuggestion { span: binding_span, suggestion });
+            err.subdiagnostic(ChangeImportBindingSuggestion { span, suggestion });
         } else {
-            err.subdiagnostic(ChangeImportBinding { span: binding_span });
+            err.subdiagnostic(ChangeImportBinding { span });
         }
     }
 
@@ -796,7 +798,7 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
             }
             ResolutionError::FailedToResolve { segment, label, suggestion, module } => {
                 let mut err =
-                    struct_span_code_err!(self.dcx(), span, E0433, "failed to resolve: {}", &label);
+                    struct_span_code_err!(self.dcx(), span, E0433, "failed to resolve: {label}");
                 err.span_label(span, label);
 
                 if let Some((suggestions, msg, applicability)) = suggestion {
@@ -819,7 +821,12 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
             ResolutionError::CannotCaptureDynamicEnvironmentInFnItem => {
                 self.dcx().create_err(errs::CannotCaptureDynamicEnvironmentInFnItem { span })
             }
-            ResolutionError::AttemptToUseNonConstantValueInConstant(ident, suggestion, current) => {
+            ResolutionError::AttemptToUseNonConstantValueInConstant {
+                ident,
+                suggestion,
+                current,
+                type_span,
+            } => {
                 // let foo =...
                 //     ^^^ given this Span
                 // ------- get this Span to have an applicable suggestion
@@ -836,13 +843,15 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
 
                 let ((with, with_label), without) = match sp {
                     Some(sp) if !self.tcx.sess.source_map().is_multiline(sp) => {
-                        let sp = sp.with_lo(BytePos(sp.lo().0 - (current.len() as u32)));
+                        let sp = sp
+                            .with_lo(BytePos(sp.lo().0 - (current.len() as u32)))
+                            .until(ident.span);
                         (
                         (Some(errs::AttemptToUseNonConstantValueInConstantWithSuggestion {
                                 span: sp,
-                                ident,
                                 suggestion,
                                 current,
+                                type_span,
                             }), Some(errs::AttemptToUseNonConstantValueInConstantLabelWithSuggestion {span})),
                             None,
                         )
@@ -1726,11 +1735,7 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
         )) = binding.kind
         {
             let def_id = self.tcx.parent(ctor_def_id);
-            return self
-                .field_def_ids(def_id)?
-                .iter()
-                .map(|&field_id| self.def_span(field_id))
-                .reduce(Span::to); // None for `struct Foo()`
+            return self.field_idents(def_id)?.iter().map(|&f| f.span).reduce(Span::to); // None for `struct Foo()`
         }
         None
     }
@@ -1989,12 +1994,12 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
             if let Some(candidate) = candidates.get(0) {
                 let path = {
                     // remove the possible common prefix of the path
-                    let start_index = (0..failed_segment_idx)
-                        .find(|&i| path[i].ident != candidate.path.segments[i].ident)
+                    let len = candidate.path.segments.len();
+                    let start_index = (0..=failed_segment_idx.min(len - 1))
+                        .find(|&i| path[i].ident.name != candidate.path.segments[i].ident.name)
                         .unwrap_or_default();
-                    let segments = (start_index..=failed_segment_idx)
-                        .map(|s| candidate.path.segments[s].clone())
-                        .collect();
+                    let segments =
+                        (start_index..len).map(|s| candidate.path.segments[s].clone()).collect();
                     Path { segments, span: Span::default(), tokens: None }
                 };
                 (
@@ -2527,7 +2532,13 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                 && let NestedMetaItem::MetaItem(meta_item) = &nested[0]
                 && let MetaItemKind::NameValue(feature_name) = &meta_item.kind
             {
-                let note = errors::ItemWasBehindFeature { feature: feature_name.symbol };
+                let note = errors::ItemWasBehindFeature {
+                    feature: feature_name.symbol,
+                    span: meta_item.span,
+                };
+                err.subdiagnostic(note);
+            } else {
+                let note = errors::ItemWasCfgOut { span: cfg.span };
                 err.subdiagnostic(note);
             }
         }
@@ -2882,7 +2893,7 @@ fn show_candidates(
                     ""
                 };
                 candidate.0 =
-                    format!("{add_use}{}{append}{trailing}{additional_newline}", &candidate.0);
+                    format!("{add_use}{}{append}{trailing}{additional_newline}", candidate.0);
             }
 
             match mode {

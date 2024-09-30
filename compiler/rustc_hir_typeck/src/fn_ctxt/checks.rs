@@ -28,9 +28,8 @@ use rustc_hir::{ExprKind, HirId, Node, QPath};
 use rustc_hir_analysis::check::intrinsicck::InlineAsmCtxt;
 use rustc_hir_analysis::check::potentially_plural_count;
 use rustc_hir_analysis::hir_ty_lowering::HirTyLowerer;
-use rustc_hir_analysis::structured_errors::StructuredDiag;
 use rustc_index::IndexVec;
-use rustc_infer::infer::error_reporting::{FailureCode, ObligationCauseExt};
+use rustc_infer::error_reporting::infer::{FailureCode, ObligationCauseExt};
 use rustc_infer::infer::TypeTrace;
 use rustc_infer::infer::{DefineOpaqueTypes, InferOk};
 use rustc_middle::ty::adjustment::AllowTwoPhase;
@@ -40,6 +39,7 @@ use rustc_middle::{bug, span_bug};
 use rustc_session::Session;
 use rustc_span::symbol::{kw, Ident};
 use rustc_span::{sym, BytePos, Span, DUMMY_SP};
+use rustc_trait_selection::infer::InferCtxtExt;
 use rustc_trait_selection::traits::{self, ObligationCauseCode, SelectionContext};
 
 use std::iter;
@@ -405,9 +405,22 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     ty: Ty<'tcx>,
                     cast_ty: &str,
                 ) {
-                    use rustc_hir_analysis::structured_errors::MissingCastForVariadicArg;
+                    let (sugg_span, replace, help) =
+                        if let Ok(snippet) = sess.source_map().span_to_snippet(span) {
+                            (Some(span), format!("{snippet} as {cast_ty}"), None)
+                        } else {
+                            (None, "".to_string(), Some(()))
+                        };
 
-                    MissingCastForVariadicArg { sess, span, ty, cast_ty }.diagnostic().emit();
+                    sess.dcx().emit_err(errors::PassToVariadicFunction {
+                        span,
+                        ty,
+                        cast_ty,
+                        help,
+                        replace,
+                        sugg_span,
+                        teach: sess.teach(E0617).then_some(()),
+                    });
                 }
 
                 // There are a few types which get autopromoted when passed via varargs
@@ -935,6 +948,17 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 &mut err,
             );
 
+            self.suggest_deref_unwrap_or(
+                &mut err,
+                error_span,
+                callee_ty,
+                call_ident,
+                expected_ty,
+                provided_ty,
+                provided_args[*provided_idx],
+                is_method,
+            );
+
             // Call out where the function is defined
             self.label_fn_like(
                 &mut err,
@@ -949,6 +973,32 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             );
             suggest_confusable(&mut err);
             return err.emit();
+        }
+
+        // Special case, we found an extra argument is provided, which is very common in practice.
+        // but there is a obviously better removing suggestion compared to the current one,
+        // try to find the argument with Error type, if we removed it all the types will become good,
+        // then we will replace the current suggestion.
+        if let [Error::Extra(provided_idx)] = &errors[..] {
+            let remove_idx_is_perfect = |idx: usize| -> bool {
+                let removed_arg_tys = provided_arg_tys
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(j, arg)| if idx == j { None } else { Some(arg) })
+                    .collect::<IndexVec<ProvidedIdx, _>>();
+                std::iter::zip(formal_and_expected_inputs.iter(), removed_arg_tys.iter()).all(
+                    |((expected_ty, _), (provided_ty, _))| {
+                        !provided_ty.references_error()
+                            && self.can_coerce(*provided_ty, *expected_ty)
+                    },
+                )
+            };
+
+            if !remove_idx_is_perfect(provided_idx.as_usize()) {
+                if let Some(i) = (0..provided_args.len()).find(|&i| remove_idx_is_perfect(i)) {
+                    errors = vec![Error::Extra(ProvidedIdx::from_usize(i))];
+                }
+            }
         }
 
         let mut err = if formal_and_expected_inputs.len() == provided_args.len() {
@@ -1055,7 +1105,15 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     } else {
                         "".to_string()
                     };
-                    labels.push((provided_span, format!("unexpected argument{provided_ty_name}")));
+                    let idx = if provided_arg_tys.len() == 1 {
+                        "".to_string()
+                    } else {
+                        format!(" #{}", arg_idx.as_usize() + 1)
+                    };
+                    labels.push((
+                        provided_span,
+                        format!("unexpected argument{idx}{provided_ty_name}"),
+                    ));
                     let mut span = provided_span;
                     if span.can_be_used_for_suggestions()
                         && error_span.can_be_used_for_suggestions()
@@ -1136,7 +1194,14 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                             } else {
                                 "".to_string()
                             };
-                            labels.push((span, format!("an argument{rendered} is missing")));
+                            labels.push((
+                                span,
+                                format!(
+                                    "argument #{}{rendered} is missing",
+                                    expected_idx.as_usize() + 1
+                                ),
+                            ));
+
                             suggestion_text = match suggestion_text {
                                 SuggestionText::None => SuggestionText::Provide(false),
                                 SuggestionText::Provide(_) => SuggestionText::Provide(true),
@@ -1358,7 +1423,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 Some(format!("provide the argument{}", if plural { "s" } else { "" }))
             }
             SuggestionText::Remove(plural) => {
-                err.multipart_suggestion(
+                err.multipart_suggestion_verbose(
                     format!("remove the extra argument{}", if plural { "s" } else { "" }),
                     suggestions,
                     Applicability::HasPlaceholders,
@@ -1652,7 +1717,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
         self.warn_if_unreachable(stmt.hir_id, stmt.span, "statement");
 
-        // Hide the outer diverging and `has_errors` flags.
+        // Hide the outer diverging flags.
         let old_diverges = self.diverges.replace(Diverges::Maybe);
 
         match stmt.kind {
@@ -2515,7 +2580,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         .and_then(|node| node.generics())
                         .into_iter()
                         .flat_map(|generics| generics.params)
-                        .find(|gen| &gen.def_id.to_def_id() == res_def_id)
+                        .find(|param| &param.def_id.to_def_id() == res_def_id)
                 } else {
                     None
                 }

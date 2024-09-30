@@ -37,7 +37,7 @@ use crate::ty::{GenericArg, GenericArgs, GenericArgsRef};
 use rustc_ast::{self as ast, attr};
 use rustc_data_structures::defer;
 use rustc_data_structures::fingerprint::Fingerprint;
-use rustc_data_structures::fx::{FxHashMap, FxHashSet};
+use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::intern::Interned;
 use rustc_data_structures::profiling::SelfProfilerRef;
 use rustc_data_structures::sharded::{IntoPointer, ShardedHashMap};
@@ -59,6 +59,7 @@ use rustc_hir::lang_items::LangItem;
 use rustc_hir::{HirId, Node, TraitCandidate};
 use rustc_index::IndexVec;
 use rustc_macros::{HashStable, TyDecodable, TyEncodable};
+use rustc_query_system::cache::WithDepNode;
 use rustc_query_system::dep_graph::DepNodeIndex;
 use rustc_query_system::ich::StableHashingContext;
 use rustc_serialize::opaque::{FileEncodeResult, FileEncoder};
@@ -75,7 +76,7 @@ use rustc_type_ir::fold::TypeFoldable;
 use rustc_type_ir::lang_items::TraitSolverLangItem;
 use rustc_type_ir::solve::SolverMode;
 use rustc_type_ir::TyKind::*;
-use rustc_type_ir::{CollectAndApply, Interner, TypeFlags, WithCachedTypeInfo};
+use rustc_type_ir::{search_graph, CollectAndApply, Interner, TypeFlags, WithCachedTypeInfo};
 use tracing::{debug, instrument};
 
 use std::assert_matches::assert_matches;
@@ -92,6 +93,8 @@ use std::ops::{Bound, Deref};
 impl<'tcx> Interner for TyCtxt<'tcx> {
     type DefId = DefId;
     type LocalDefId = LocalDefId;
+    type Span = Span;
+
     type GenericArgs = ty::GenericArgsRef<'tcx>;
 
     type GenericArgsSlice = &'tcx [ty::GenericArg<'tcx>];
@@ -162,12 +165,26 @@ impl<'tcx> Interner for TyCtxt<'tcx> {
     type Clause = Clause<'tcx>;
     type Clauses = ty::Clauses<'tcx>;
 
-    type EvaluationCache = &'tcx solve::EvaluationCache<'tcx>;
+    type Tracked<T: fmt::Debug + Clone> = WithDepNode<T>;
+    fn mk_tracked<T: fmt::Debug + Clone>(
+        self,
+        data: T,
+        dep_node: DepNodeIndex,
+    ) -> Self::Tracked<T> {
+        WithDepNode::new(dep_node, data)
+    }
+    fn get_tracked<T: fmt::Debug + Clone>(self, tracked: &Self::Tracked<T>) -> T {
+        tracked.get(self)
+    }
 
-    fn evaluation_cache(self, mode: SolverMode) -> &'tcx solve::EvaluationCache<'tcx> {
+    fn with_global_cache<R>(
+        self,
+        mode: SolverMode,
+        f: impl FnOnce(&mut search_graph::GlobalCache<Self>) -> R,
+    ) -> R {
         match mode {
-            SolverMode::Normal => &self.new_solver_evaluation_cache,
-            SolverMode::Coherence => &self.new_solver_coherence_evaluation_cache,
+            SolverMode::Normal => f(&mut *self.new_solver_evaluation_cache.lock()),
+            SolverMode::Coherence => f(&mut *self.new_solver_coherence_evaluation_cache.lock()),
         }
     }
 
@@ -345,12 +362,16 @@ impl<'tcx> Interner for TyCtxt<'tcx> {
     fn explicit_super_predicates_of(
         self,
         def_id: DefId,
-    ) -> ty::EarlyBinder<'tcx, impl IntoIterator<Item = ty::Clause<'tcx>>> {
+    ) -> ty::EarlyBinder<'tcx, impl IntoIterator<Item = (ty::Clause<'tcx>, Span)>> {
+        ty::EarlyBinder::bind(self.explicit_super_predicates_of(def_id).instantiate_identity(self))
+    }
+
+    fn explicit_implied_predicates_of(
+        self,
+        def_id: DefId,
+    ) -> ty::EarlyBinder<'tcx, impl IntoIterator<Item = (ty::Clause<'tcx>, Span)>> {
         ty::EarlyBinder::bind(
-            self.explicit_super_predicates_of(def_id)
-                .instantiate_identity(self)
-                .predicates
-                .into_iter(),
+            self.explicit_implied_predicates_of(def_id).instantiate_identity(self),
         )
     }
 
@@ -364,6 +385,10 @@ impl<'tcx> Interner for TyCtxt<'tcx> {
 
     fn is_lang_item(self, def_id: DefId, lang_item: TraitSolverLangItem) -> bool {
         self.is_lang_item(def_id, trait_lang_item_to_lang_item(lang_item))
+    }
+
+    fn as_lang_item(self, def_id: DefId) -> Option<TraitSolverLangItem> {
+        lang_item_to_trait_lang_item(self.lang_items().from_def_id(def_id)?)
     }
 
     fn associated_type_def_ids(self, def_id: DefId) -> impl IntoIterator<Item = DefId> {
@@ -518,20 +543,12 @@ impl<'tcx> Interner for TyCtxt<'tcx> {
         self.is_object_safe(trait_def_id)
     }
 
+    fn trait_is_fundamental(self, def_id: DefId) -> bool {
+        self.trait_def(def_id).is_fundamental
+    }
+
     fn trait_may_be_implemented_via_object(self, trait_def_id: DefId) -> bool {
         self.trait_def(trait_def_id).implement_via_object
-    }
-
-    fn fn_trait_kind_from_def_id(self, trait_def_id: DefId) -> Option<ty::ClosureKind> {
-        self.fn_trait_kind_from_def_id(trait_def_id)
-    }
-
-    fn async_fn_trait_kind_from_def_id(self, trait_def_id: DefId) -> Option<ty::ClosureKind> {
-        self.async_fn_trait_kind_from_def_id(trait_def_id)
-    }
-
-    fn supertrait_def_ids(self, trait_def_id: DefId) -> impl IntoIterator<Item = DefId> {
-        self.supertrait_def_ids(trait_def_id)
     }
 
     fn delay_bug(self, msg: impl ToString) -> ErrorGuaranteed {
@@ -571,49 +588,83 @@ impl<'tcx> Interner for TyCtxt<'tcx> {
     ) -> Ty<'tcx> {
         placeholder.find_const_ty_from_env(param_env)
     }
-}
 
-fn trait_lang_item_to_lang_item(lang_item: TraitSolverLangItem) -> LangItem {
-    match lang_item {
-        TraitSolverLangItem::AsyncDestruct => LangItem::AsyncDestruct,
-        TraitSolverLangItem::AsyncFnKindHelper => LangItem::AsyncFnKindHelper,
-        TraitSolverLangItem::AsyncFnKindUpvars => LangItem::AsyncFnKindUpvars,
-        TraitSolverLangItem::AsyncFnOnceOutput => LangItem::AsyncFnOnceOutput,
-        TraitSolverLangItem::AsyncIterator => LangItem::AsyncIterator,
-        TraitSolverLangItem::CallOnceFuture => LangItem::CallOnceFuture,
-        TraitSolverLangItem::CallRefFuture => LangItem::CallRefFuture,
-        TraitSolverLangItem::Clone => LangItem::Clone,
-        TraitSolverLangItem::Copy => LangItem::Copy,
-        TraitSolverLangItem::Coroutine => LangItem::Coroutine,
-        TraitSolverLangItem::CoroutineReturn => LangItem::CoroutineReturn,
-        TraitSolverLangItem::CoroutineYield => LangItem::CoroutineYield,
-        TraitSolverLangItem::Destruct => LangItem::Destruct,
-        TraitSolverLangItem::DiscriminantKind => LangItem::DiscriminantKind,
-        TraitSolverLangItem::DynMetadata => LangItem::DynMetadata,
-        TraitSolverLangItem::EffectsMaybe => LangItem::EffectsMaybe,
-        TraitSolverLangItem::EffectsIntersection => LangItem::EffectsIntersection,
-        TraitSolverLangItem::EffectsIntersectionOutput => LangItem::EffectsIntersectionOutput,
-        TraitSolverLangItem::EffectsNoRuntime => LangItem::EffectsNoRuntime,
-        TraitSolverLangItem::EffectsRuntime => LangItem::EffectsRuntime,
-        TraitSolverLangItem::FnPtrTrait => LangItem::FnPtrTrait,
-        TraitSolverLangItem::FusedIterator => LangItem::FusedIterator,
-        TraitSolverLangItem::Future => LangItem::Future,
-        TraitSolverLangItem::FutureOutput => LangItem::FutureOutput,
-        TraitSolverLangItem::Iterator => LangItem::Iterator,
-        TraitSolverLangItem::Metadata => LangItem::Metadata,
-        TraitSolverLangItem::Option => LangItem::Option,
-        TraitSolverLangItem::PointeeTrait => LangItem::PointeeTrait,
-        TraitSolverLangItem::PointerLike => LangItem::PointerLike,
-        TraitSolverLangItem::Poll => LangItem::Poll,
-        TraitSolverLangItem::Sized => LangItem::Sized,
-        TraitSolverLangItem::TransmuteTrait => LangItem::TransmuteTrait,
-        TraitSolverLangItem::Tuple => LangItem::Tuple,
-        TraitSolverLangItem::Unpin => LangItem::Unpin,
-        TraitSolverLangItem::Unsize => LangItem::Unsize,
+    fn anonymize_bound_vars<T: TypeFoldable<TyCtxt<'tcx>>>(
+        self,
+        binder: ty::Binder<'tcx, T>,
+    ) -> ty::Binder<'tcx, T> {
+        self.anonymize_bound_vars(binder)
     }
 }
 
+macro_rules! bidirectional_lang_item_map {
+    ($($name:ident),+ $(,)?) => {
+        fn trait_lang_item_to_lang_item(lang_item: TraitSolverLangItem) -> LangItem {
+            match lang_item {
+                $(TraitSolverLangItem::$name => LangItem::$name,)+
+            }
+        }
+
+        fn lang_item_to_trait_lang_item(lang_item: LangItem) -> Option<TraitSolverLangItem> {
+            Some(match lang_item {
+                $(LangItem::$name => TraitSolverLangItem::$name,)+
+                _ => return None,
+            })
+        }
+    }
+}
+
+bidirectional_lang_item_map! {
+// tidy-alphabetical-start
+    AsyncDestruct,
+    AsyncFn,
+    AsyncFnKindHelper,
+    AsyncFnKindUpvars,
+    AsyncFnMut,
+    AsyncFnOnce,
+    AsyncFnOnceOutput,
+    AsyncIterator,
+    CallOnceFuture,
+    CallRefFuture,
+    Clone,
+    Copy,
+    Coroutine,
+    CoroutineReturn,
+    CoroutineYield,
+    Destruct,
+    DiscriminantKind,
+    DynMetadata,
+    EffectsIntersection,
+    EffectsIntersectionOutput,
+    EffectsMaybe,
+    EffectsNoRuntime,
+    EffectsRuntime,
+    Fn,
+    FnMut,
+    FnOnce,
+    FnPtrTrait,
+    FusedIterator,
+    Future,
+    FutureOutput,
+    Iterator,
+    Metadata,
+    Option,
+    PointeeTrait,
+    PointerLike,
+    Poll,
+    Sized,
+    TransmuteTrait,
+    Tuple,
+    Unpin,
+    Unsize,
+// tidy-alphabetical-end
+}
+
 impl<'tcx> rustc_type_ir::inherent::DefId<TyCtxt<'tcx>> for DefId {
+    fn is_local(self) -> bool {
+        self.is_local()
+    }
+
     fn as_local(self) -> Option<LocalDefId> {
         self.as_local()
     }
@@ -1247,8 +1298,8 @@ pub struct GlobalCtxt<'tcx> {
     pub evaluation_cache: traits::EvaluationCache<'tcx>,
 
     /// Caches the results of goal evaluation in the new solver.
-    pub new_solver_evaluation_cache: solve::EvaluationCache<'tcx>,
-    pub new_solver_coherence_evaluation_cache: solve::EvaluationCache<'tcx>,
+    pub new_solver_evaluation_cache: Lock<search_graph::GlobalCache<TyCtxt<'tcx>>>,
+    pub new_solver_coherence_evaluation_cache: Lock<search_graph::GlobalCache<TyCtxt<'tcx>>>,
 
     pub canonical_param_env_cache: CanonicalParamEnvCache<'tcx>,
 
@@ -1391,11 +1442,12 @@ impl<'tcx> TyCtxt<'tcx> {
     }
 
     /// Allocates a read-only byte or string literal for `mir::interpret`.
-    pub fn allocate_bytes(self, bytes: &[u8]) -> interpret::AllocId {
+    /// Returns the same `AllocId` if called again with the same bytes.
+    pub fn allocate_bytes_dedup(self, bytes: &[u8]) -> interpret::AllocId {
         // Create an allocation that just contains these bytes.
         let alloc = interpret::Allocation::from_bytes_byte_aligned_immutable(bytes);
         let alloc = self.mk_const_alloc(alloc);
-        self.reserve_and_set_memory_alloc(alloc)
+        self.reserve_and_set_memory_dedup(alloc)
     }
 
     /// Returns a range of the start/end indices specified with the
@@ -1432,7 +1484,7 @@ impl<'tcx> TyCtxt<'tcx> {
     }
 
     pub fn lift<T: Lift<TyCtxt<'tcx>>>(self, value: T) -> Option<T::Lifted> {
-        value.lift_to_tcx(self)
+        value.lift_to_interner(self)
     }
 
     /// Creates a type context. To use the context call `fn enter` which
@@ -2035,7 +2087,7 @@ macro_rules! nop_lift {
     ($set:ident; $ty:ty => $lifted:ty) => {
         impl<'a, 'tcx> Lift<TyCtxt<'tcx>> for $ty {
             type Lifted = $lifted;
-            fn lift_to_tcx(self, tcx: TyCtxt<'tcx>) -> Option<Self::Lifted> {
+            fn lift_to_interner(self, tcx: TyCtxt<'tcx>) -> Option<Self::Lifted> {
                 // Assert that the set has the right type.
                 // Given an argument that has an interned type, the return type has the type of
                 // the corresponding interner set. This won't actually return anything, we're
@@ -2070,7 +2122,7 @@ macro_rules! nop_list_lift {
     ($set:ident; $ty:ty => $lifted:ty) => {
         impl<'a, 'tcx> Lift<TyCtxt<'tcx>> for &'a List<$ty> {
             type Lifted = &'tcx List<$lifted>;
-            fn lift_to_tcx(self, tcx: TyCtxt<'tcx>) -> Option<Self::Lifted> {
+            fn lift_to_interner(self, tcx: TyCtxt<'tcx>) -> Option<Self::Lifted> {
                 // Assert that the set has the right type.
                 if false {
                     let _x: &InternedSet<'tcx, List<$lifted>> = &tcx.interners.$set;
@@ -2108,7 +2160,7 @@ macro_rules! nop_slice_lift {
     ($ty:ty => $lifted:ty) => {
         impl<'a, 'tcx> Lift<TyCtxt<'tcx>> for &'a [$ty] {
             type Lifted = &'tcx [$lifted];
-            fn lift_to_tcx(self, tcx: TyCtxt<'tcx>) -> Option<Self::Lifted> {
+            fn lift_to_interner(self, tcx: TyCtxt<'tcx>) -> Option<Self::Lifted> {
                 if self.is_empty() {
                     return Some(&[]);
                 }
@@ -2463,25 +2515,7 @@ impl<'tcx> TyCtxt<'tcx> {
     /// to identify which traits may define a given associated type to help avoid cycle errors,
     /// and to make size estimates for vtable layout computation.
     pub fn supertrait_def_ids(self, trait_def_id: DefId) -> impl Iterator<Item = DefId> + 'tcx {
-        let mut set = FxHashSet::default();
-        let mut stack = vec![trait_def_id];
-
-        set.insert(trait_def_id);
-
-        iter::from_fn(move || -> Option<DefId> {
-            let trait_did = stack.pop()?;
-            let generic_predicates = self.explicit_super_predicates_of(trait_did);
-
-            for (predicate, _) in generic_predicates.predicates {
-                if let ty::ClauseKind::Trait(data) = predicate.kind().skip_binder() {
-                    if set.insert(data.def_id()) {
-                        stack.push(data.def_id());
-                    }
-                }
-            }
-
-            Some(trait_did)
-        })
+        rustc_type_ir::elaborate::supertrait_def_ids(self, trait_def_id)
     }
 
     /// Given a closure signature, returns an equivalent fn signature. Detuples

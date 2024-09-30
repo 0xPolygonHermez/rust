@@ -1,4 +1,4 @@
-//! Documentation generation for rustbuilder.
+//! Documentation generation for bootstrap.
 //!
 //! This module implements generation for all bits and pieces of documentation
 //! for the Rust project. This notably includes suites like the rust book, the
@@ -146,7 +146,6 @@ impl<P: Step> Step for RustbookSrc<P> {
         let out = out.join(&name);
         let index = out.join("index.html");
         let rustbook = builder.tool_exe(Tool::Rustbook);
-        let mut rustbook_cmd = builder.tool_cmd(Tool::Rustbook);
 
         if !builder.config.dry_run()
             && (!up_to_date(&src, &index) || !up_to_date(&rustbook, &index))
@@ -154,7 +153,13 @@ impl<P: Step> Step for RustbookSrc<P> {
             builder.info(&format!("Rustbook ({target}) - {name}"));
             let _ = fs::remove_dir_all(&out);
 
-            builder.run(rustbook_cmd.arg("build").arg(&src).arg("-d").arg(&out));
+            builder
+                .tool_cmd(Tool::Rustbook)
+                .arg("build")
+                .arg(&src)
+                .arg("-d")
+                .arg(&out)
+                .run(builder);
 
             for lang in &self.languages {
                 let out = out.join(lang);
@@ -162,10 +167,15 @@ impl<P: Step> Step for RustbookSrc<P> {
                 builder.info(&format!("Rustbook ({target}) - {name} - {lang}"));
                 let _ = fs::remove_dir_all(&out);
 
-                let mut rustbook_cmd = builder.tool_cmd(Tool::Rustbook);
-                builder.run(
-                    rustbook_cmd.arg("build").arg(&src).arg("-d").arg(&out).arg("-l").arg(lang),
-                );
+                builder
+                    .tool_cmd(Tool::Rustbook)
+                    .arg("build")
+                    .arg(&src)
+                    .arg("-d")
+                    .arg(&out)
+                    .arg("-l")
+                    .arg(lang)
+                    .run(builder);
             }
         }
 
@@ -248,10 +258,6 @@ impl Step for TheBook {
         // build the version info page and CSS
         let shared_assets = builder.ensure(SharedAssets { target });
 
-        // build the command first so we don't nest GHA groups
-        // FIXME: this doesn't do anything!
-        builder.rustdoc_cmd(compiler);
-
         // build the redirect pages
         let _guard = builder.msg_doc(compiler, "book redirect pages", target);
         for file in t!(fs::read_dir(redirect_path)) {
@@ -301,7 +307,7 @@ fn invoke_rustdoc(
         cmd.arg("-Z").arg("unstable-options").arg("--disable-minification");
     }
 
-    builder.run(cmd);
+    cmd.run(builder);
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -395,7 +401,7 @@ impl Step for Standalone {
             } else {
                 cmd.arg("--markdown-css").arg("rust.css");
             }
-            builder.run(cmd);
+            cmd.run(builder);
         }
 
         // We open doc/index.html as the default if invoked as `x.py doc --open`
@@ -494,7 +500,7 @@ impl Step for Releases {
                 cmd.arg("--disable-minification");
             }
 
-            builder.run(cmd);
+            cmd.run(builder);
         }
 
         // We open doc/RELEASES.html as the default if invoked as `x.py doc --open RELEASES.md`
@@ -738,7 +744,7 @@ fn doc_std(
         format!("library{} in {} format", crate_description(requested_crates), format.as_str());
     let _guard = builder.msg_doc(compiler, description, target);
 
-    builder.run(cargo);
+    cargo.into_cmd().run(builder);
     builder.cp_link_r(&out_dir, out);
 }
 
@@ -863,7 +869,7 @@ impl Step for Rustc {
         let proc_macro_out_dir = builder.stage_out(compiler, Mode::Rustc).join("doc");
         symlink_dir_force(&builder.config, &out, &proc_macro_out_dir);
 
-        builder.run(cargo);
+        cargo.into_cmd().run(builder);
 
         if !builder.config.dry_run() {
             // Sanity check on linked compiler crates
@@ -996,7 +1002,7 @@ macro_rules! tool_doc {
                 symlink_dir_force(&builder.config, &out, &proc_macro_out_dir);
 
                 let _guard = builder.msg_doc(compiler, stringify!($tool).to_lowercase(), target);
-                builder.run(cargo);
+                cargo.into_cmd().run(builder);
 
                 if !builder.config.dry_run() {
                     // Sanity check on linked doc directories
@@ -1075,12 +1081,7 @@ impl Step for ErrorIndex {
         builder.info(&format!("Documenting error index ({})", self.target));
         let out = builder.doc_out(self.target);
         t!(fs::create_dir_all(&out));
-        let mut index = tool::ErrorIndex::command(builder);
-        index.arg("html");
-        index.arg(out);
-        index.arg(&builder.version);
-
-        builder.run(index);
+        tool::ErrorIndex::command(builder).arg("html").arg(out).arg(&builder.version).run(builder);
     }
 }
 
@@ -1116,7 +1117,7 @@ impl Step for UnstableBookGen {
         cmd.arg(builder.src.join("src"));
         cmd.arg(out);
 
-        builder.run(cmd);
+        cmd.run(builder);
     }
 }
 
@@ -1211,7 +1212,7 @@ impl Step for RustcBook {
             self.compiler.host,
             self.target,
         );
-        builder.run(cmd);
+        cmd.run(builder);
         drop(doc_generator_guard);
 
         // Run rustbook/mdbook to generate the HTML pages.

@@ -203,7 +203,7 @@ fn bounds_reference_self(tcx: TyCtxt<'_>, trait_def_id: DefId) -> SmallVec<[Span
     tcx.associated_items(trait_def_id)
         .in_definition_order()
         .filter(|item| item.kind == ty::AssocKind::Type)
-        .flat_map(|item| tcx.explicit_item_bounds(item.def_id).instantiate_identity_iter_copied())
+        .flat_map(|item| tcx.explicit_item_bounds(item.def_id).iter_identity_copied())
         .filter_map(|c| predicate_references_self(tcx, c))
         .collect()
 }
@@ -805,10 +805,11 @@ fn contains_illegal_self_type_reference<'tcx, T: TypeVisitable<TyCtxt<'tcx>>>(
                         .unwrap()
                         .contains(&data.trait_ref(self.tcx).def_id);
 
+                    // only walk contained types if it's not a super trait
                     if is_supertrait_of_current_trait {
-                        ControlFlow::Continue(()) // do not walk contained types, do not report error, do collect $200
+                        ControlFlow::Continue(())
                     } else {
-                        t.super_visit_with(self) // DO walk contained types, POSSIBLY reporting an error
+                        t.super_visit_with(self) // POSSIBLY reporting an error
                     }
                 }
                 _ => t.super_visit_with(self), // walk contained types, if any

@@ -81,6 +81,8 @@ pub enum BuiltinUnsafe {
     AllowInternalUnsafe,
     #[diag(lint_builtin_unsafe_block)]
     UnsafeBlock,
+    #[diag(lint_builtin_unsafe_extern_block)]
+    UnsafeExternBlock,
     #[diag(lint_builtin_unsafe_trait)]
     UnsafeTrait,
     #[diag(lint_builtin_unsafe_impl)]
@@ -315,6 +317,13 @@ pub struct BuiltinTypeAliasGenericBounds<'a, 'b> {
     pub suggestion: BuiltinTypeAliasGenericBoundsSuggestion,
     #[subdiagnostic]
     pub sub: Option<SuggestChangingAssocTypes<'a, 'b>>,
+}
+
+#[derive(LintDiagnostic)]
+#[diag(lint_macro_expr_fragment_specifier_2024_migration)]
+pub struct MacroExprFragment2024 {
+    #[suggestion(code = "expr_2021", applicability = "machine-applicable")]
+    pub suggestion: Span,
 }
 
 pub struct BuiltinTypeAliasGenericBoundsSuggestion {
@@ -915,6 +924,14 @@ pub struct TyQualified {
     pub ty: String,
     #[suggestion(code = "{ty}", applicability = "maybe-incorrect")]
     pub suggestion: Span,
+}
+
+#[derive(LintDiagnostic)]
+#[diag(lint_non_glob_import_type_ir_inherent)]
+pub struct NonGlobImportTypeIrInherent {
+    #[suggestion(code = "{snippet}", applicability = "maybe-incorrect")]
+    pub suggestion: Option<Span>,
+    pub snippet: &'static str,
 }
 
 #[derive(LintDiagnostic)]
@@ -2040,10 +2057,34 @@ pub struct UnitBindingsDiag {
 }
 
 #[derive(LintDiagnostic)]
-#[diag(lint_builtin_asm_labels)]
-#[help]
-#[note]
-pub struct BuiltinNamedAsmLabel;
+pub enum InvalidAsmLabel {
+    #[diag(lint_invalid_asm_label_named)]
+    #[help]
+    #[note]
+    Named {
+        #[note(lint_invalid_asm_label_no_span)]
+        missing_precise_span: bool,
+    },
+    #[diag(lint_invalid_asm_label_format_arg)]
+    #[help]
+    #[note(lint_note1)]
+    #[note(lint_note2)]
+    FormatArg {
+        #[note(lint_invalid_asm_label_no_span)]
+        missing_precise_span: bool,
+    },
+    #[diag(lint_invalid_asm_label_binary)]
+    #[help]
+    #[note(lint_note1)]
+    #[note(lint_note2)]
+    Binary {
+        #[note(lint_invalid_asm_label_no_span)]
+        missing_precise_span: bool,
+        // hack to get a label on the whole span, must match the emitted span
+        #[label]
+        span: Span,
+    },
+}
 
 #[derive(Subdiagnostic)]
 pub enum UnexpectedCfgCargoHelp {

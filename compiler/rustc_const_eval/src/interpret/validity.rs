@@ -34,7 +34,6 @@ use super::{
     Pointer, Projectable, Scalar, ValueVisitor,
 };
 
-// for the validation errors
 use super::InterpError::UndefinedBehavior as Ub;
 use super::InterpError::Unsupported as Unsup;
 use super::UndefinedBehaviorInfo::*;
@@ -745,7 +744,7 @@ fn mutability<'tcx>(ecx: &InterpCx<'tcx, impl Machine<'tcx>>, alloc_id: AllocId)
             }
         }
         GlobalAlloc::Memory(alloc) => alloc.inner().mutability,
-        GlobalAlloc::Function(..) | GlobalAlloc::VTable(..) => {
+        GlobalAlloc::Function { .. } | GlobalAlloc::VTable(..) => {
             // These are immutable, we better don't allow mutable pointers here.
             Mutability::Not
         }

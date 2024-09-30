@@ -9,7 +9,7 @@ use rustc_middle::mir::*;
 use rustc_middle::ty::{self, Ty};
 use rustc_mir_dataflow::move_paths::{LookupResult, MovePathIndex};
 use rustc_span::{BytePos, ExpnKind, MacroKind, Span};
-use rustc_trait_selection::traits::error_reporting::FindExprBySpan;
+use rustc_trait_selection::error_reporting::traits::FindExprBySpan;
 
 use crate::diagnostics::CapturedMessageOpt;
 use crate::diagnostics::{DescribePlaceOpt, UseSpans};
@@ -554,6 +554,7 @@ impl<'infcx, 'tcx> MirBorrowckCtxt<'_, '_, 'infcx, 'tcx> {
             is_loop_message: false,
             is_move_msg: false,
             is_loop_move: false,
+            has_suggest_reborrow: false,
             maybe_reinitialized_locations_is_empty: true,
         };
         if let Some(use_spans) = use_spans {

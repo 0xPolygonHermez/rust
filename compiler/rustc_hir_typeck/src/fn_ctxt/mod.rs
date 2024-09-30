@@ -5,7 +5,7 @@ mod checks;
 mod inspect_obligations;
 mod suggestions;
 
-use rustc_errors::{DiagCtxtHandle, ErrorGuaranteed};
+use rustc_errors::DiagCtxtHandle;
 
 use crate::coercion::DynamicCoerceMany;
 use crate::fallback::DivergingFallbackBehavior;
@@ -15,9 +15,9 @@ use hir::def_id::CRATE_DEF_ID;
 use rustc_hir as hir;
 use rustc_hir::def_id::{DefId, LocalDefId};
 use rustc_hir_analysis::hir_ty_lowering::{HirTyLowerer, RegionInferReason};
+use rustc_infer::error_reporting::infer::sub_relations::SubRelations;
+use rustc_infer::error_reporting::infer::TypeErrCtxt;
 use rustc_infer::infer;
-use rustc_infer::infer::error_reporting::sub_relations::SubRelations;
-use rustc_infer::infer::error_reporting::TypeErrCtxt;
 use rustc_middle::ty::{self, Const, Ty, TyCtxt, TypeVisitableExt};
 use rustc_session::Session;
 use rustc_span::symbol::Ident;
@@ -217,6 +217,10 @@ impl<'tcx> HirTyLowerer<'tcx> for FnCtxt<'_, 'tcx> {
         self.tcx
     }
 
+    fn dcx(&self) -> DiagCtxtHandle<'_> {
+        self.root_ctxt.dcx()
+    }
+
     fn item_def_id(&self) -> LocalDefId {
         self.body_id
     }
@@ -336,10 +340,6 @@ impl<'tcx> HirTyLowerer<'tcx> for FnCtxt<'_, 'tcx> {
 
     fn infcx(&self) -> Option<&infer::InferCtxt<'tcx>> {
         Some(&self.infcx)
-    }
-
-    fn set_tainted_by_errors(&self, e: ErrorGuaranteed) {
-        self.infcx.set_tainted_by_errors(e)
     }
 
     fn lower_fn_sig(

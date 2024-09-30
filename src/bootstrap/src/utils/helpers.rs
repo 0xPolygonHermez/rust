@@ -1,8 +1,9 @@
-//! Various utility functions used throughout rustbuild.
+//! Various utility functions used throughout bootstrap.
 //!
 //! Simple things like testing the various filesystem operations here and there,
 //! not a lot of interesting happenings here unfortunately.
 
+use build_helper::git::{get_git_merge_base, output_result, GitConfig};
 use build_helper::util::fail;
 use std::env;
 use std::ffi::OsStr;
@@ -47,7 +48,7 @@ macro_rules! t {
         }
     };
 }
-use crate::utils::exec::BootstrapCommand;
+use crate::utils::exec::{command, BootstrapCommand};
 pub use t;
 
 pub fn exe(name: &str, target: TargetSelection) -> String {
@@ -244,7 +245,7 @@ pub fn is_valid_test_suite_arg<'a, P: AsRef<Path>>(
 
 // FIXME: get rid of this function
 pub fn check_run(cmd: &mut BootstrapCommand, print_cmd_on_fail: bool) -> bool {
-    let status = match cmd.command.status() {
+    let status = match cmd.as_command_mut().status() {
         Ok(status) => status,
         Err(e) => {
             println!("failed to execute command: {cmd:?}\nERROR: {e}");
@@ -338,13 +339,13 @@ fn dir_up_to_date(src: &Path, threshold: SystemTime) -> bool {
 /// When `clang-cl` is used with instrumentation, we need to add clang's runtime library resource
 /// directory to the linker flags, otherwise there will be linker errors about the profiler runtime
 /// missing. This function returns the path to that directory.
-pub fn get_clang_cl_resource_dir(clang_cl_path: &str) -> PathBuf {
+pub fn get_clang_cl_resource_dir(builder: &Builder<'_>, clang_cl_path: &str) -> PathBuf {
     // Similar to how LLVM does it, to find clang's library runtime directory:
     // - we ask `clang-cl` to locate the `clang_rt.builtins` lib.
-    let mut builtins_locator = Command::new(clang_cl_path);
+    let mut builtins_locator = command(clang_cl_path);
     builtins_locator.args(["/clang:-print-libgcc-file-name", "/clang:--rtlib=compiler-rt"]);
 
-    let clang_rt_builtins = output(&mut builtins_locator);
+    let clang_rt_builtins = builtins_locator.capture_stdout().run(builder).stdout();
     let clang_rt_builtins = Path::new(clang_rt_builtins.trim());
     assert!(
         clang_rt_builtins.exists(),
@@ -360,7 +361,7 @@ pub fn get_clang_cl_resource_dir(clang_cl_path: &str) -> PathBuf {
 /// Returns a flag that configures LLD to use only a single thread.
 /// If we use an external LLD, we need to find out which version is it to know which flag should we
 /// pass to it (LLD older than version 10 had a different flag).
-fn lld_flag_no_threads(lld_mode: LldMode, is_windows: bool) -> &'static str {
+fn lld_flag_no_threads(builder: &Builder<'_>, lld_mode: LldMode, is_windows: bool) -> &'static str {
     static LLD_NO_THREADS: OnceLock<(&'static str, &'static str)> = OnceLock::new();
 
     let new_flags = ("/threads:1", "--threads=1");
@@ -369,7 +370,9 @@ fn lld_flag_no_threads(lld_mode: LldMode, is_windows: bool) -> &'static str {
     let (windows_flag, other_flag) = LLD_NO_THREADS.get_or_init(|| {
         let newer_version = match lld_mode {
             LldMode::External => {
-                let out = output(Command::new("lld").arg("-flavor").arg("ld").arg("--version"));
+                let mut cmd = command("lld").capture_stdout();
+                cmd.arg("-flavor").arg("ld").arg("--version");
+                let out = cmd.run(builder).stdout();
                 match (out.find(char::is_numeric), out.find('.')) {
                     (Some(b), Some(e)) => out.as_str()[b..e].parse::<i32>().ok().unwrap_or(14) > 10,
                     _ => true,
@@ -431,7 +434,7 @@ pub fn linker_flags(
         if matches!(lld_threads, LldThreads::No) {
             args.push(format!(
                 "-Clink-arg=-Wl,{}",
-                lld_flag_no_threads(builder.config.lld_mode, target.is_windows())
+                lld_flag_no_threads(builder, builder.config.lld_mode, target.is_windows())
             ));
         }
     }
@@ -492,14 +495,16 @@ pub fn check_cfg_arg(name: &str, values: Option<&[&str]>) -> String {
     format!("--check-cfg=cfg({name}{next})")
 }
 
-/// Prepares `Command` that runs git inside the source directory if given.
+/// Prepares `BootstrapCommand` that runs git inside the source directory if given.
 ///
 /// Whenever a git invocation is needed, this function should be preferred over
-/// manually building a git `Command`. This approach allows us to manage bootstrap-specific
-/// needs/hacks from a single source, rather than applying them on next to every `Command::new("git")`,
-/// which is painful to ensure that the required change is applied on each one of them correctly.
-pub fn git(source_dir: Option<&Path>) -> Command {
-    let mut git = Command::new("git");
+/// manually building a git `BootstrapCommand`. This approach allows us to manage
+/// bootstrap-specific needs/hacks from a single source, rather than applying them on next to every
+/// git command creation, which is painful to ensure that the required change is applied
+/// on each one of them correctly.
+#[track_caller]
+pub fn git(source_dir: Option<&Path>) -> BootstrapCommand {
+    let mut git = command("git");
 
     if let Some(source_dir) = source_dir {
         git.current_dir(source_dir);
@@ -516,4 +521,27 @@ pub fn git(source_dir: Option<&Path>) -> Command {
     }
 
     git
+}
+
+/// Returns the closest commit available from upstream for the given `author` and `target_paths`.
+///
+/// If it fails to find the commit from upstream using `git merge-base`, fallbacks to HEAD.
+pub fn get_closest_merge_base_commit(
+    source_dir: Option<&Path>,
+    config: &GitConfig<'_>,
+    author: &str,
+    target_paths: &[PathBuf],
+) -> Result<String, String> {
+    let mut git = git(source_dir).capture_stdout();
+
+    let merge_base = get_git_merge_base(config, source_dir).unwrap_or_else(|_| "HEAD".into());
+
+    git.arg(Path::new("rev-list"));
+    git.args([&format!("--author={author}"), "-n1", "--first-parent", &merge_base]);
+
+    if !target_paths.is_empty() {
+        git.arg("--").args(target_paths);
+    }
+
+    Ok(output_result(git.as_command_mut())?.trim().to_owned())
 }

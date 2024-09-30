@@ -11,7 +11,7 @@ use std::{
 use build_helper::ci::CiEnv;
 use xz2::bufread::XzDecoder;
 
-use crate::utils::exec::BootstrapCommand;
+use crate::utils::exec::{command, BootstrapCommand};
 use crate::utils::helpers::hex_encode;
 use crate::utils::helpers::{check_run, exe, move_file, program_out_of_date};
 use crate::{t, Config};
@@ -212,7 +212,7 @@ impl Config {
     fn download_http_with_retries(&self, tempfile: &Path, url: &str, help_on_error: &str) {
         println!("downloading {url}");
         // Try curl. If that fails and we are on windows, fallback to PowerShell.
-        let mut curl = BootstrapCommand::new("curl");
+        let mut curl = command("curl");
         curl.args([
             "-y",
             "30",
@@ -702,9 +702,13 @@ download-rustc = false
             // time `rustc_llvm` build script ran. However, the timestamps of the
             // files in the tarball are in the past, so it doesn't trigger a
             // rebuild.
-            let now = filetime::FileTime::from_system_time(std::time::SystemTime::now());
+            let now = std::time::SystemTime::now();
+            let file_times = fs::FileTimes::new().set_accessed(now).set_modified(now);
+
             let llvm_config = llvm_root.join("bin").join(exe("llvm-config", self.build));
-            t!(filetime::set_file_times(llvm_config, now, now));
+            let llvm_config_file = t!(File::options().write(true).open(llvm_config));
+
+            t!(llvm_config_file.set_times(file_times));
 
             if self.should_fix_bins_and_dylibs() {
                 let llvm_lib = llvm_root.join("lib");

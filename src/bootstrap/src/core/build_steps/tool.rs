@@ -1,7 +1,6 @@
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use crate::core::build_steps::compile;
 use crate::core::build_steps::toolstate::ToolState;
@@ -9,9 +8,8 @@ use crate::core::builder;
 use crate::core::builder::{Builder, Cargo as CargoCommand, RunConfig, ShouldRun, Step};
 use crate::core::config::TargetSelection;
 use crate::utils::channel::GitInfo;
-use crate::utils::exec::BootstrapCommand;
-use crate::utils::helpers::output;
-use crate::utils::helpers::{add_dylib_path, exe, t};
+use crate::utils::exec::{command, BootstrapCommand};
+use crate::utils::helpers::{add_dylib_path, exe, get_closest_merge_base_commit, git, t};
 use crate::Compiler;
 use crate::Mode;
 use crate::{gha, Kind};
@@ -246,6 +244,7 @@ macro_rules! bootstrap_tool {
         ;
     )+) => {
         #[derive(PartialEq, Eq, Clone)]
+        #[allow(dead_code)]
         pub enum Tool {
             $(
                 $name,
@@ -338,6 +337,7 @@ bootstrap_tool!(
     RustdocGUITest, "src/tools/rustdoc-gui-test", "rustdoc-gui-test", is_unstable_tool = true, allow_features = "test";
     CoverageDump, "src/tools/coverage-dump", "coverage-dump";
     RustcPerfWrapper, "src/tools/rustc-perf-wrapper", "rustc-perf-wrapper";
+    WasmComponentLd, "src/tools/wasm-component-ld", "wasm-component-ld", is_unstable_tool = true, allow_features = "min_specialization";
 );
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -439,7 +439,7 @@ impl ErrorIndex {
         // for rustc_private and libLLVM.so, and `sysroot_lib` for libstd, etc.
         let host = builder.config.build;
         let compiler = builder.compiler_for(builder.top_stage, host, host);
-        let mut cmd = BootstrapCommand::new(builder.ensure(ErrorIndex { compiler }));
+        let mut cmd = command(builder.ensure(ErrorIndex { compiler }));
         let mut dylib_paths = builder.rustc_lib_paths(compiler);
         dylib_paths.push(PathBuf::from(&builder.sysroot_libdir(compiler, compiler.host)));
         add_dylib_path(dylib_paths, &mut cmd);
@@ -554,6 +554,57 @@ impl Step for Rustdoc {
         }
         let target = target_compiler.host;
 
+        let bin_rustdoc = || {
+            let sysroot = builder.sysroot(target_compiler);
+            let bindir = sysroot.join("bin");
+            t!(fs::create_dir_all(&bindir));
+            let bin_rustdoc = bindir.join(exe("rustdoc", target_compiler.host));
+            let _ = fs::remove_file(&bin_rustdoc);
+            bin_rustdoc
+        };
+
+        // If CI rustc is enabled and we haven't modified the rustdoc sources,
+        // use the precompiled rustdoc from CI rustc's sysroot to speed up bootstrapping.
+        if builder.download_rustc()
+            && target_compiler.stage > 0
+            && builder.rust_info().is_managed_git_subrepository()
+        {
+            let commit = get_closest_merge_base_commit(
+                Some(&builder.config.src),
+                &builder.config.git_config(),
+                &builder.config.stage0_metadata.config.git_merge_commit_email,
+                &[],
+            )
+            .unwrap();
+
+            let librustdoc_src = builder.config.src.join("src/librustdoc");
+            let rustdoc_src = builder.config.src.join("src/tools/rustdoc");
+
+            // FIXME: The change detection logic here is quite similar to `Config::download_ci_rustc_commit`.
+            // It would be better to unify them.
+            let has_changes = !git(Some(&builder.config.src))
+                .allow_failure()
+                .run_always()
+                .args(["diff-index", "--quiet", &commit])
+                .arg("--")
+                .arg(librustdoc_src)
+                .arg(rustdoc_src)
+                .run(builder)
+                .is_success();
+
+            if !has_changes {
+                let precompiled_rustdoc = builder
+                    .config
+                    .ci_rustc_dir()
+                    .join("bin")
+                    .join(exe("rustdoc", target_compiler.host));
+
+                let bin_rustdoc = bin_rustdoc();
+                builder.copy_link(&precompiled_rustdoc, &bin_rustdoc);
+                return bin_rustdoc;
+            }
+        }
+
         let build_compiler = if builder.download_rustc() && target_compiler.stage == 1 {
             // We already have the stage 1 compiler, we don't need to cut the stage.
             builder.compiler(target_compiler.stage, builder.config.build)
@@ -603,7 +654,7 @@ impl Step for Rustdoc {
             &self.compiler.host,
             &target,
         );
-        builder.run(cargo);
+        cargo.into_cmd().run(builder);
 
         // Cargo adds a number of paths to the dylib search path on windows, which results in
         // the wrong rustdoc being executed. To avoid the conflicting rustdocs, we name the "tool"
@@ -614,11 +665,7 @@ impl Step for Rustdoc {
 
         // don't create a stage0-sysroot/bin directory.
         if target_compiler.stage > 0 {
-            let sysroot = builder.sysroot(target_compiler);
-            let bindir = sysroot.join("bin");
-            t!(fs::create_dir_all(&bindir));
-            let bin_rustdoc = bindir.join(exe("rustdoc", target_compiler.host));
-            let _ = fs::remove_file(&bin_rustdoc);
+            let bin_rustdoc = bin_rustdoc();
             builder.copy_link(&tool_rustdoc, &bin_rustdoc);
             bin_rustdoc
         } else {
@@ -858,7 +905,16 @@ impl Step for LlvmBitcodeLinker {
             &self.extra_features,
         );
 
-        builder.run(cargo);
+        let _guard = builder.msg_tool(
+            Kind::Build,
+            Mode::ToolRustc,
+            bin_name,
+            self.compiler.stage,
+            &self.compiler.host,
+            &self.target,
+        );
+
+        cargo.into_cmd().run(builder);
 
         let tool_out = builder
             .cargo_out(self.compiler, Mode::ToolRustc, self.target)
@@ -913,20 +969,20 @@ impl Step for LibcxxVersionTool {
             }
 
             let compiler = builder.cxx(self.target).unwrap();
-            let mut cmd = BootstrapCommand::new(compiler);
+            let mut cmd = command(compiler);
 
             cmd.arg("-o")
                 .arg(&executable)
                 .arg(builder.src.join("src/tools/libcxx-version/main.cpp"));
 
-            builder.run(cmd);
+            cmd.run(builder);
 
             if !executable.exists() {
                 panic!("Something went wrong. {} is not present", executable.display());
             }
         }
 
-        let version_output = output(&mut Command::new(executable));
+        let version_output = command(executable).capture_stdout().run(builder).stdout();
 
         let version_str = version_output.split_once("version:").unwrap().1;
         let version = version_str.trim().parse::<usize>().unwrap();
@@ -1050,7 +1106,7 @@ impl<'a> Builder<'a> {
     /// Gets a `BootstrapCommand` which is ready to run `tool` in `stage` built for
     /// `host`.
     pub fn tool_cmd(&self, tool: Tool) -> BootstrapCommand {
-        let mut cmd = BootstrapCommand::new(self.tool_exe(tool));
+        let mut cmd = command(self.tool_exe(tool));
         let compiler = self.compiler(0, self.config.build);
         let host = &compiler.host;
         // Prepares the `cmd` provided to be able to run the `compiler` provided.

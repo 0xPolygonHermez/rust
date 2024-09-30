@@ -8,7 +8,7 @@ use std::fs;
 use std::hash::Hash;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use crate::core::build_steps::tool::{self, SourceType};
@@ -20,16 +20,14 @@ use crate::core::config::{DryRun, SplitDebuginfo, TargetSelection};
 use crate::prepare_behaviour_dump_dir;
 use crate::utils::cache::Cache;
 use crate::utils::helpers::{self, add_dylib_path, add_link_lib_path, exe, linker_args};
-use crate::utils::helpers::{check_cfg_arg, libdir, linker_flags, output, t, LldThreads};
+use crate::utils::helpers::{check_cfg_arg, libdir, linker_flags, t, LldThreads};
 use crate::EXTRA_CHECK_CFGS;
 use crate::{Build, CLang, Crate, DocTests, GitRepo, Mode};
 
-use crate::utils::exec::BootstrapCommand;
+use crate::utils::exec::{command, BootstrapCommand};
 pub use crate::Compiler;
 
 use clap::ValueEnum;
-// FIXME: replace with std::lazy after it gets stabilized and reaches beta
-use once_cell::sync::Lazy;
 
 #[cfg(test)]
 mod tests;
@@ -475,9 +473,41 @@ impl StepDescription {
             return;
         }
 
-        // Handle all PathSets.
+        let mut path_lookup: Vec<(PathBuf, bool)> =
+            paths.clone().into_iter().map(|p| (p, false)).collect();
+
+        // List of `(usize, &StepDescription, Vec<PathSet>)` where `usize` is the closest index of a path
+        // compared to the given CLI paths. So we can respect to the CLI order by using this value to sort
+        // the steps.
+        let mut steps_to_run = vec![];
+
         for (desc, should_run) in v.iter().zip(&should_runs) {
             let pathsets = should_run.pathset_for_paths_removing_matches(&mut paths, desc.kind);
+
+            // This value is used for sorting the step execution order.
+            // By default, `usize::MAX` is used as the index for steps to assign them the lowest priority.
+            //
+            // If we resolve the step's path from the given CLI input, this value will be updated with
+            // the step's actual index.
+            let mut closest_index = usize::MAX;
+
+            // Find the closest index from the original list of paths given by the CLI input.
+            for (index, (path, is_used)) in path_lookup.iter_mut().enumerate() {
+                if !*is_used && !paths.contains(path) {
+                    closest_index = index;
+                    *is_used = true;
+                    break;
+                }
+            }
+
+            steps_to_run.push((closest_index, desc, pathsets));
+        }
+
+        // Sort the steps before running them to respect the CLI order.
+        steps_to_run.sort_by_key(|(index, _, _)| *index);
+
+        // Handle all PathSets.
+        for (_index, desc, pathsets) in steps_to_run {
             if !pathsets.is_empty() {
                 desc.maybe_run(builder, pathsets);
             }
@@ -499,7 +529,7 @@ impl StepDescription {
 
 enum ReallyDefault<'a> {
     Bool(bool),
-    Lazy(Lazy<bool, Box<dyn Fn() -> bool + 'a>>),
+    Lazy(LazyLock<bool, Box<dyn Fn() -> bool + 'a>>),
 }
 
 pub struct ShouldRun<'a> {
@@ -530,7 +560,7 @@ impl<'a> ShouldRun<'a> {
     }
 
     pub fn lazy_default_condition(mut self, lazy_cond: Box<dyn Fn() -> bool + 'a>) -> Self {
-        self.is_really_default = ReallyDefault::Lazy(Lazy::new(lazy_cond));
+        self.is_really_default = ReallyDefault::Lazy(LazyLock::new(lazy_cond));
         self
     }
 
@@ -862,6 +892,7 @@ impl<'a> Builder<'a> {
                 test::Clippy,
                 test::CompiletestTest,
                 test::CrateRunMakeSupport,
+                test::CrateBuildHelper,
                 test::RustdocJSStd,
                 test::RustdocJSNotStd,
                 test::RustdocGUI,
@@ -1255,7 +1286,7 @@ impl<'a> Builder<'a> {
         if run_compiler.stage == 0 {
             // `ensure(Clippy { stage: 0 })` *builds* clippy with stage0, it doesn't use the beta clippy.
             let cargo_clippy = self.build.config.download_clippy();
-            let mut cmd = BootstrapCommand::new(cargo_clippy);
+            let mut cmd = command(cargo_clippy);
             cmd.env("CARGO", &self.initial_cargo);
             return cmd;
         }
@@ -1274,7 +1305,7 @@ impl<'a> Builder<'a> {
         let mut dylib_path = helpers::dylib_path();
         dylib_path.insert(0, self.sysroot(run_compiler).join("lib"));
 
-        let mut cmd = BootstrapCommand::new(cargo_clippy);
+        let mut cmd = command(cargo_clippy);
         cmd.env(helpers::dylib_path_var(), env::join_paths(&dylib_path).unwrap());
         cmd.env("CARGO", &self.initial_cargo);
         cmd
@@ -1296,7 +1327,7 @@ impl<'a> Builder<'a> {
             extra_features: Vec::new(),
         });
         // Invoke cargo-miri, make sure it can find miri and cargo.
-        let mut cmd = BootstrapCommand::new(cargo_miri);
+        let mut cmd = command(cargo_miri);
         cmd.env("MIRI", &miri);
         cmd.env("CARGO", &self.initial_cargo);
         // Need to add the `run_compiler` libs. Those are the libs produces *by* `build_compiler`,
@@ -1312,7 +1343,7 @@ impl<'a> Builder<'a> {
     }
 
     pub fn rustdoc_cmd(&self, compiler: Compiler) -> BootstrapCommand {
-        let mut cmd = BootstrapCommand::new(self.bootstrap_out.join("rustdoc"));
+        let mut cmd = command(self.bootstrap_out.join("rustdoc"));
         cmd.env("RUSTC_STAGE", compiler.stage.to_string())
             .env("RUSTC_SYSROOT", self.sysroot(compiler))
             // Note that this is *not* the sysroot_libdir because rustdoc must be linked
@@ -1366,7 +1397,7 @@ impl<'a> Builder<'a> {
             cargo = self.cargo_miri_cmd(compiler);
             cargo.arg("miri").arg(subcmd);
         } else {
-            cargo = BootstrapCommand::new(&self.initial_cargo);
+            cargo = command(&self.initial_cargo);
             cargo.arg(cmd);
         }
 
@@ -1628,11 +1659,11 @@ impl<'a> Builder<'a> {
         }
 
         // This tells Cargo (and in turn, rustc) to output more complete
-        // dependency information.  Most importantly for rustbuild, this
+        // dependency information.  Most importantly for bootstrap, this
         // includes sysroot artifacts, like libstd, which means that we don't
-        // need to track those in rustbuild (an error prone process!). This
+        // need to track those in bootstrap (an error prone process!). This
         // feature is currently unstable as there may be some bugs and such, but
-        // it represents a big improvement in rustbuild's reliability on
+        // it represents a big improvement in bootstrap's reliability on
         // rebuilds, so we're using it here.
         //
         // For some additional context, see #63470 (the PR originally adding
@@ -1644,7 +1675,7 @@ impl<'a> Builder<'a> {
                 // Restrict the allowed features so we don't depend on nightly
                 // accidentally.
                 //
-                // binary-dep-depinfo is used by rustbuild itself for all
+                // binary-dep-depinfo is used by bootstrap itself for all
                 // compilations.
                 //
                 // Lots of tools depend on proc_macro2 and proc-macro-error.
@@ -1919,7 +1950,8 @@ impl<'a> Builder<'a> {
         // platform-specific environment variable as a workaround.
         if mode == Mode::ToolRustc || mode == Mode::Codegen {
             if let Some(llvm_config) = self.llvm_config(target) {
-                let llvm_libdir = output(Command::new(llvm_config).arg("--libdir"));
+                let llvm_libdir =
+                    command(llvm_config).capture_stdout().arg("--libdir").run(self).stdout();
                 add_link_lib_path(vec![llvm_libdir.trim().into()], &mut cargo);
             }
         }
@@ -1998,6 +2030,10 @@ impl<'a> Builder<'a> {
         if mode == Mode::Rustc {
             rustflags.arg("-Zunstable-options");
             rustflags.arg("-Wrustc::internal");
+            // FIXME(edition_2024): Change this to `-Wrust_2024_idioms` when all
+            // of the individual lints are satisfied.
+            rustflags.arg("-Wkeyword_idents_2024");
+            rustflags.arg("-Wunsafe_op_in_unsafe_fn");
         }
 
         if self.config.rust_frame_pointers {
@@ -2105,7 +2141,7 @@ impl<'a> Builder<'a> {
         // Try to use a sysroot-relative bindir, in case it was configured absolutely.
         cargo.env("RUSTC_INSTALL_BINDIR", self.config.bindir_relative());
 
-        self.ci_env.force_coloring_in_ci(&mut cargo.command);
+        cargo.force_coloring_in_ci(self.ci_env);
 
         // When we build Rust dylibs they're all intended for intermediate
         // usage, so make sure we pass the -Cprefer-dynamic flag instead of
@@ -2398,6 +2434,10 @@ impl Cargo {
         cargo
     }
 
+    pub fn into_cmd(self) -> BootstrapCommand {
+        self.into()
+    }
+
     /// Same as `Cargo::new` except this one doesn't configure the linker with `Cargo::configure_linker`
     pub fn new_for_mir_opt_tests(
         builder: &Builder<'_>,
@@ -2522,7 +2562,7 @@ impl Cargo {
 
         if let Some(target_linker) = builder.linker(target) {
             let target = crate::envify(&target.triple);
-            self.command.env(&format!("CARGO_TARGET_{target}_LINKER"), target_linker);
+            self.command.env(format!("CARGO_TARGET_{target}_LINKER"), target_linker);
         }
         // We want to set -Clinker using Cargo, therefore we only call `linker_flags` and not
         // `linker_args` here.
@@ -2620,11 +2660,5 @@ impl From<Cargo> for BootstrapCommand {
             cargo.command.env("RUSTC_ALLOW_FEATURES", cargo.allow_features);
         }
         cargo.command
-    }
-}
-
-impl From<Cargo> for Command {
-    fn from(cargo: Cargo) -> Command {
-        BootstrapCommand::from(cargo).command
     }
 }

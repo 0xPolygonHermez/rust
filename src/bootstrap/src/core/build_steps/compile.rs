@@ -1,7 +1,7 @@
 //! Implementation of compiling various phases of the compiler and standard
 //! library.
 //!
-//! This module contains some of the real meat in the rustbuild build system
+//! This module contains some of the real meat in the bootstrap build system
 //! which is where Cargo is used to compile the standard library, libtest, and
 //! the compiler. This module is also responsible for assembling the sysroot as it
 //! goes along from the output of the previous stage.
@@ -14,7 +14,7 @@ use std::fs;
 use std::io::prelude::*;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::str;
 
 use serde_derive::Deserialize;
@@ -27,13 +27,12 @@ use crate::core::builder::crate_description;
 use crate::core::builder::Cargo;
 use crate::core::builder::{Builder, Kind, PathSet, RunConfig, ShouldRun, Step, TaskPath};
 use crate::core::config::{DebuginfoLevel, LlvmLibunwind, RustcLto, TargetSelection};
-use crate::utils::exec::BootstrapCommand;
+use crate::utils::exec::command;
 use crate::utils::helpers::{
-    exe, get_clang_cl_resource_dir, is_debug_info, is_dylib, output, symlink_dir, t, up_to_date,
+    exe, get_clang_cl_resource_dir, is_debug_info, is_dylib, symlink_dir, t, up_to_date,
 };
 use crate::LLVM_TOOLS;
 use crate::{CLang, Compiler, DependencyType, GitRepo, Mode};
-use filetime::FileTime;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Std {
@@ -696,10 +695,10 @@ fn copy_sanitizers(
             || target == "x86_64-apple-ios"
         {
             // Update the library’s install name to reflect that it has been renamed.
-            apple_darwin_update_library_name(&dst, &format!("@rpath/{}", &runtime.name));
+            apple_darwin_update_library_name(builder, &dst, &format!("@rpath/{}", runtime.name));
             // Upon renaming the install name, the code signature of the file will invalidate,
             // so we will sign it again.
-            apple_darwin_sign_file(&dst);
+            apple_darwin_sign_file(builder, &dst);
         }
 
         target_deps.push(dst);
@@ -708,25 +707,17 @@ fn copy_sanitizers(
     target_deps
 }
 
-fn apple_darwin_update_library_name(library_path: &Path, new_name: &str) {
-    let status = Command::new("install_name_tool")
-        .arg("-id")
-        .arg(new_name)
-        .arg(library_path)
-        .status()
-        .expect("failed to execute `install_name_tool`");
-    assert!(status.success());
+fn apple_darwin_update_library_name(builder: &Builder<'_>, library_path: &Path, new_name: &str) {
+    command("install_name_tool").arg("-id").arg(new_name).arg(library_path).run(builder);
 }
 
-fn apple_darwin_sign_file(file_path: &Path) {
-    let status = Command::new("codesign")
+fn apple_darwin_sign_file(builder: &Builder<'_>, file_path: &Path) {
+    command("codesign")
         .arg("-f") // Force to rewrite the existing signature
         .arg("-s")
         .arg("-")
         .arg(file_path)
-        .status()
-        .expect("failed to execute `codesign`");
-    assert!(status.success());
+        .run(builder);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -773,20 +764,19 @@ impl Step for StartupObjects {
             let src_file = &src_dir.join(file.to_string() + ".rs");
             let dst_file = &dst_dir.join(file.to_string() + ".o");
             if !up_to_date(src_file, dst_file) {
-                let mut cmd = BootstrapCommand::new(&builder.initial_rustc);
+                let mut cmd = command(&builder.initial_rustc);
                 cmd.env("RUSTC_BOOTSTRAP", "1");
                 if !builder.local_rebuild {
                     // a local_rebuild compiler already has stage1 features
                     cmd.arg("--cfg").arg("bootstrap");
                 }
-                builder.run(
-                    cmd.arg("--target")
-                        .arg(target.rustc_target_arg())
-                        .arg("--emit=obj")
-                        .arg("-o")
-                        .arg(dst_file)
-                        .arg(src_file),
-                );
+                cmd.arg("--target")
+                    .arg(target.rustc_target_arg())
+                    .arg("--emit=obj")
+                    .arg("-o")
+                    .arg(dst_file)
+                    .arg(src_file)
+                    .run(builder);
             }
 
             let target = sysroot_dir.join((*file).to_string() + ".o");
@@ -819,8 +809,8 @@ pub struct Rustc {
     pub compiler: Compiler,
     /// Whether to build a subset of crates, rather than the whole compiler.
     ///
-    /// This should only be requested by the user, not used within rustbuild itself.
-    /// Using it within rustbuild can lead to confusing situation where lints are replayed
+    /// This should only be requested by the user, not used within bootstrap itself.
+    /// Using it within bootstrap can lead to confusing situation where lints are replayed
     /// in two different steps.
     crates: Vec<String>,
 }
@@ -1173,7 +1163,7 @@ fn rustc_llvm_env(builder: &Builder<'_>, cargo: &mut Cargo, target: TargetSelect
     if builder.config.llvm_profile_generate && target.is_msvc() {
         if let Some(ref clang_cl_path) = builder.config.llvm_clang_cl {
             // Add clang's runtime library directory to the search path
-            let clang_rt_dir = get_clang_cl_resource_dir(clang_cl_path);
+            let clang_rt_dir = get_clang_cl_resource_dir(builder, clang_cl_path);
             llvm_linker_flags.push_str(&format!("-L{}", clang_rt_dir.display()));
         }
     }
@@ -1214,8 +1204,8 @@ fn rustc_llvm_env(builder: &Builder<'_>, cargo: &mut Cargo, target: TargetSelect
     if builder.config.llvm_use_libcxx {
         cargo.env("LLVM_USE_LIBCXX", "1");
     }
-    if builder.config.llvm_optimize && !builder.config.llvm_release_debuginfo {
-        cargo.env("LLVM_NDEBUG", "1");
+    if builder.config.llvm_assertions {
+        cargo.env("LLVM_ASSERTIONS", "1");
     }
 }
 
@@ -1488,10 +1478,10 @@ pub fn compiler_file(
     if builder.config.dry_run() {
         return PathBuf::new();
     }
-    let mut cmd = Command::new(compiler);
+    let mut cmd = command(compiler);
     cmd.args(builder.cflags(target, GitRepo::Rustc, c));
     cmd.arg(format!("-print-file-name={file}"));
-    let out = output(&mut cmd);
+    let out = cmd.capture_stdout().run(builder).stdout();
     PathBuf::from(out.trim())
 }
 
@@ -1832,11 +1822,29 @@ impl Step for Assemble {
             }
         }
 
+        // In addition to `rust-lld` also install `wasm-component-ld` when
+        // LLD is enabled. This is a relatively small binary that primarily
+        // delegates to the `rust-lld` binary for linking and then runs
+        // logic to create the final binary. This is used by the
+        // `wasm32-wasip2` target of Rust.
+        if builder.build_wasm_component_ld() {
+            let wasm_component_ld_exe =
+                builder.ensure(crate::core::build_steps::tool::WasmComponentLd {
+                    compiler: build_compiler,
+                    target: target_compiler.host,
+                });
+            builder.copy_link(
+                &wasm_component_ld_exe,
+                &libdir_bin.join(wasm_component_ld_exe.file_name().unwrap()),
+            );
+        }
+
         if builder.config.llvm_enabled(target_compiler.host) {
             let llvm::LlvmResult { llvm_config, .. } =
                 builder.ensure(llvm::Llvm { target: target_compiler.host });
             if !builder.config.dry_run() && builder.config.llvm_tools_enabled {
-                let llvm_bin_dir = output(Command::new(llvm_config).arg("--bindir"));
+                let llvm_bin_dir =
+                    command(llvm_config).capture_stdout().arg("--bindir").run(builder).stdout();
                 let llvm_bin_dir = Path::new(llvm_bin_dir.trim());
 
                 // Since we've already built the LLVM tools, install them to the sysroot.
@@ -2080,7 +2088,8 @@ pub fn stream_cargo(
     tail_args: Vec<String>,
     cb: &mut dyn FnMut(CargoMessage<'_>),
 ) -> bool {
-    let mut cargo = BootstrapCommand::from(cargo).command;
+    let mut cmd = cargo.into_cmd();
+    let cargo = cmd.as_command_mut();
     // Instruct Cargo to give us json messages on stdout, critically leaving
     // stderr as piped so we can get those pretty colors.
     let mut message_format = if builder.config.json_output {
@@ -2160,9 +2169,10 @@ pub fn strip_debug(builder: &Builder<'_>, target: TargetSelection, path: &Path) 
         return;
     }
 
-    let previous_mtime = FileTime::from_last_modification_time(&path.metadata().unwrap());
-    // NOTE: `output` will propagate any errors here.
-    output(Command::new("strip").arg("--strip-debug").arg(path));
+    let previous_mtime = t!(t!(path.metadata()).modified());
+    command("strip").capture().arg("--strip-debug").arg(path).run(builder);
+
+    let file = t!(fs::File::open(path));
 
     // After running `strip`, we have to set the file modification time to what it was before,
     // otherwise we risk Cargo invalidating its fingerprint and rebuilding the world next time
@@ -2176,5 +2186,5 @@ pub fn strip_debug(builder: &Builder<'_>, target: TargetSelection, path: &Path) 
     // In the second invocation of bootstrap, Cargo will see that the mtime of librustc_driver.so
     // is greater than the mtime of rustc-main, and will rebuild rustc-main. That will then cause
     // everything else (standard library, future stages...) to be rebuilt.
-    t!(filetime::set_file_mtime(path, previous_mtime));
+    t!(file.set_modified(previous_mtime));
 }
