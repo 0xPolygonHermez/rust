@@ -20,6 +20,7 @@
 #![doc(rust_logo)]
 #![feature(assert_matches)]
 #![feature(box_patterns)]
+#![feature(cfg_version)]
 #![feature(control_flow_enum)]
 #![feature(extend_one)]
 #![feature(if_let_guard)]

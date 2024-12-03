@@ -662,6 +662,9 @@ impl Build {
         if target.contains("zkvm") {
             features.push_str(" compiler-builtins-mem");
         }
+        if target.contains("ziskos") {
+            features.push_str(" compiler-builtins-mem");
+        }
         features
     }
 
@@ -1476,6 +1479,12 @@ Executed at: {executed_at}"#,
     }
 
     fn beta_prerelease_version(&self) -> u32 {
+        if self.config.dry_run() {
+            // Dry run doesn't actually execute a git command, which will panic when trying to parse
+            // the outputs.
+            return 0;
+        }
+
         fn extract_beta_rev_from_file<P: AsRef<Path>>(version_file: P) -> Option<String> {
             let version = fs::read_to_string(version_file).ok()?;
 

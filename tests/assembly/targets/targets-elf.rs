@@ -378,6 +378,9 @@
 //@ revisions: riscv32im_risc0_zkvm_elf
 //@ [riscv32im_risc0_zkvm_elf] compile-flags: --target riscv32im-risc0-zkvm-elf
 //@ [riscv32im_risc0_zkvm_elf] needs-llvm-components: riscv
+//@ revisions: riscv32ima_polygon_ziskos_elf
+//@ [riscv32ima_polygon_ziskos_elf] compile-flags: --target riscv32ima-polygon-ziskos-elf
+//@ [riscv32ima_polygon_ziskos_elf] needs-llvm-components: riscv
 //@ revisions: riscv32im_unknown_none_elf
 //@ [riscv32im_unknown_none_elf] compile-flags: --target riscv32im-unknown-none-elf
 //@ [riscv32im_unknown_none_elf] needs-llvm-components: riscv
@@ -435,6 +438,9 @@
 //@ revisions: riscv64imac_unknown_none_elf
 //@ [riscv64imac_unknown_none_elf] compile-flags: --target riscv64imac-unknown-none-elf
 //@ [riscv64imac_unknown_none_elf] needs-llvm-components: riscv
+//@ revisions: riscv64ima_polygon_ziskos_elf
+//@ [riscv64ima_polygon_ziskos_elf] compile-flags: --target riscv64ima-polygon-ziskos-elf
+//@ [riscv64ima_polygon_ziskos_elf] needs-llvm-components: riscv
 //@ revisions: s390x_unknown_linux_gnu
 //@ [s390x_unknown_linux_gnu] compile-flags: --target s390x-unknown-linux-gnu
 //@ [s390x_unknown_linux_gnu] needs-llvm-components: systemz

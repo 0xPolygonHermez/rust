@@ -1757,6 +1757,7 @@ supported_targets! {
     ("riscv32im-risc0-zkvm-elf", riscv32im_risc0_zkvm_elf),
     ("riscv32im-unknown-none-elf", riscv32im_unknown_none_elf),
     ("riscv32ima-unknown-none-elf", riscv32ima_unknown_none_elf),
+    ("riscv32ima-polygon-ziskos-elf", riscv32ima_polygon_ziskos_elf),
     ("riscv32imc-unknown-none-elf", riscv32imc_unknown_none_elf),
     ("riscv32imc-esp-espidf", riscv32imc_esp_espidf),
     ("riscv32imac-esp-espidf", riscv32imac_esp_espidf),
@@ -1771,6 +1772,7 @@ supported_targets! {
     ("riscv64gc-unknown-none-elf", riscv64gc_unknown_none_elf),
     ("riscv64gc-unknown-linux-gnu", riscv64gc_unknown_linux_gnu),
     ("riscv64gc-unknown-linux-musl", riscv64gc_unknown_linux_musl),
+    ("riscv64ima-polygon-ziskos-elf", riscv64ima_polygon_ziskos_elf),
 
     ("sparc-unknown-none-elf", sparc_unknown_none_elf),
 
