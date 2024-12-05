@@ -29,7 +29,7 @@ fi
 # Fetch branches from the remote
 echo -e "\e[1;32mFetching 'master' branch from remote '${REMOTE_NAME}'\e[0m"
 exec_git \
-    "git fetch ${REMOTE_NAME} master" \
+    "git fetch ${REMOTE_NAME} master --tags" \
     "Failed to fetch remote '${REMOTE_NAME}' branches"
 
 # Ensure we are on the master branch
@@ -46,12 +46,13 @@ fi
 
 # Rebase master branch with upstream/master and capture its output
 echo -e "\e[1;32mUpdating 'master' branch with 'upstream/master'\e[0m"
-output=$(exec_git \
+exec_git \
     "git rebase upstream/master" \
-    "Failed to rebase 'master' branch with 'upstream/master'")
-echo "$output"
+    "Failed to rebase 'master' branch with 'upstream/master'"
 
-if [[ "$output" != *"branch master is up to date"* ]]; then
+# Check if the remote upstream/master is ahead of the local master and ask if you want to push the changes
+commits_behind=$(git rev-list --count origin/master..master)
+if [[ "$commits_behind" -gt 0 ]]; then
     read -p "$(echo -e '\e[1;33mDo you want to push the updated 'master' branch? [Y/n]: \e[0m')" response
     response=$(echo "$response" | tr '[:upper:]' '[:lower:]')
 
@@ -76,9 +77,14 @@ exec_git \
 
 # List cherry picks
 echo -e "\e[1;32mList of cherry picks to apply:\e[0m"
+exec_git \
+    "git cherry ${FROM_VERSION} zisk-rust-${FROM_VERSION} -v" \
+    "Failed to list cherry picks"
+
+# Store the list of cherry-pick commits to apply in an array
 commits=$(exec_git \
     "git cherry ${FROM_VERSION} zisk-rust-${FROM_VERSION} -v" \
-    "Failed to list cherry picks")
+    "Failed to get cherry picks")
 IFS=$'\n' read -d '' -r -a commits_array <<< "$commits"
 echo "$commits"
 echo -e "\e[1;32mPress a key to continue...\e[0m"
