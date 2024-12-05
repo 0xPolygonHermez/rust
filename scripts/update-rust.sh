@@ -59,7 +59,7 @@ if [[ "$commits_behind" -gt 0 ]]; then
     if [[ "$response" != "n" && "$response" != "no" ]]; then
         echo -e "\e[1;32mPushing 'master' branch to origin\e[0m"
         exec_git \
-            "git push origin master" \
+            "git push origin master --force" \
             "Failed to push 'master' branch to origin"
     fi
 fi
