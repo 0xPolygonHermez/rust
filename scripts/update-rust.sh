@@ -57,10 +57,13 @@ if [[ "$commits_behind" -gt 0 ]]; then
     response=$(echo "$response" | tr '[:upper:]' '[:lower:]')
 
     if [[ "$response" != "n" && "$response" != "no" ]]; then
-        echo -e "\e[1;32mPushing 'master' branch to origin\e[0m"
+        echo -e "\e[1;32mPushing 'master' branch and tags to origin\e[0m"
         exec_git \
             "git push origin master --force" \
             "Failed to push 'master' branch to origin"
+        exec_git \
+            "git push origin --tags" \
+            "Failed to push tags to origin"
     fi
 fi
 
