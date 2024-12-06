@@ -38,6 +38,8 @@ const STAGE0_MISSING_TARGETS: &[&str] = &[
     "riscv32e-unknown-none-elf",
     "riscv32em-unknown-none-elf",
     "riscv32emc-unknown-none-elf",
+    "riscv64ima-polygon-ziskos-elf",
+    "riscv32ima-polygon-ziskos-elf",
 ];
 
 /// Minimum version threshold for libstdc++ required when using prebuilt LLVM

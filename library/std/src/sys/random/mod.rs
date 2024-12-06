@@ -70,6 +70,9 @@ cfg_if::cfg_if! {
     } else if #[cfg(target_os = "zkvm")] {
         mod zkvm;
         pub use zkvm::fill_bytes;
+    } else if #[cfg(target_os = "ziskos")] {
+        mod ziskos;
+        pub use ziskos::fill_bytes;
     } else if #[cfg(any(
         all(target_family = "wasm", target_os = "unknown"),
         target_os = "xous",

@@ -668,7 +668,10 @@ impl Build {
         if target.contains("zkvm") {
             features.insert("compiler-builtins-mem");
         }
-
+        if target.contains("ziskos") {
+            features.insert("compiler-builtins-mem");
+        }
+        
         features.into_iter().collect::<Vec<_>>().join(" ")
     }
 
