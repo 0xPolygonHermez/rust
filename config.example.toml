@@ -53,10 +53,10 @@
 #
 # Note that many of the LLVM options are not currently supported for
 # downloading. Currently only the "assertions" option can be toggled.
-#download-ci-llvm = true
+download-ci-llvm = false
 
 # Indicates whether the LLVM build is a Release or Debug build
-#optimize = true
+optimize = false
 
 # Indicates whether LLVM should be built with ThinLTO. Note that this will
 # only succeed if you use clang, lld, llvm-ar, and llvm-ranlib in your C/C++
@@ -94,7 +94,7 @@
 # When true, link libstdc++ statically into the rustc_llvm.
 # This is useful if you don't want to use the dynamic version of that
 # library provided by LLVM.
-#static-libstdcpp = false
+static-libstdcpp = true
 
 # Enable LLVM to use zstd for compression.
 #libzstd = false
@@ -127,7 +127,7 @@
 # Whether to build LLVM as a dynamically linked library (as opposed to statically linked).
 # Under the hood, this passes `--shared` to llvm-config.
 # NOTE: To avoid performing LTO multiple times, we suggest setting this to `true` when `thin-lto` is enabled.
-#link-shared = llvm.thin-lto
+link-shared = true
 
 # When building llvm, this configures what is being appended to the version.
 # To use LLVM version as is, provide an empty string.
@@ -494,7 +494,7 @@
 #       "maximally debuggable" environment (notably libstd) takes
 #       hours to build.
 #
-#debug = false
+debug = true
 
 # Whether to download the stage 1 and 2 compilers from CI.
 # This is useful if you are working on tools, doc-comments, or library (you will be able to build
