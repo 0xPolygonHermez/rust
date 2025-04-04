@@ -1,0 +1,79 @@
+name: Build
+
+on:
+  workflow_call:
+    secrets:
+      TOKEN:
+        required: true
+
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            triple: aarch64-apple-darwin
+          # - os: macos-13
+          #  triple: x86_64-apple-darwin
+          - os: ubuntu-20.04
+            triple: x86_64-unknown-linux-gnu
+            runs-on: self-hosted
+          # - os: ubuntu-22.04
+          #  triple: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runs-on || matrix.os }}
+    steps:
+
+      - name: Install riscv-tools
+        if: matrix.os == 'macos-14' || matrix.os == 'macos-13'
+        run: |
+          brew tap riscv-software-src/riscv
+          brew install riscv-tools
+
+      # - name: Install gcc-riscv64-unknown-elf
+      #  if: matrix.os == 'ubuntu-20.04' || matrix.os == 'ubuntu-22.04'
+      #  run: |
+      #    sudo apt-get update
+      #    sudo apt-get -y install gcc-riscv64-unknown-elf
+
+      - name: Install rust toolchain
+        id: rustc-toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          default: true
+
+      - uses: lukka/get-cmake@v3.27.4
+
+      - name: Show rust version
+        run: |
+          cargo version
+          rustup toolchain list
+
+      - name: Check out 0xPolygonHermez/zisk
+        uses: actions/checkout@v3
+        with:
+          repository: 0xPolygonHermez/zisk
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: develop
+          path: zisk
+
+      - name: Check out 0xPolygonHermez/rust
+        uses: actions/checkout@v3
+        with:
+          submodules: "recursive"
+          path: rust
+          fetch-depth: 0
+
+      - name: Build
+        run: GITHUB_ACTIONS=false ZISK_BUILD_DIR=$GITHUB_WORKSPACE cargo run --bin cargo-zisk -- sdk build-toolchain
+        working-directory: zisk
+
+      - name: Archive build output
+        uses: actions/upload-artifact@v3
+        with:
+          name: rust-toolchain-${{ matrix.triple }}
+          path: |
+            zisk/rust-toolchain-${{ matrix.triple }}.tar.gz

@@ -69,6 +69,9 @@ cfg_if::cfg_if! {
     } else if #[cfg(target_os = "wasi")] {
         mod wasi;
         pub use wasi::fill_bytes;
+    } else if #[cfg(all(target_os = "zkvm", target_vendor = "polygon"))] {
+        mod zisk;
+        pub use zisk::fill_bytes;
     } else if #[cfg(target_os = "zkvm")] {
         mod zkvm;
         pub use zkvm::fill_bytes;
