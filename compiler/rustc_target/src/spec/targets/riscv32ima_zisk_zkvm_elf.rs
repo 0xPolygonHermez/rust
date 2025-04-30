@@ -16,7 +16,7 @@ pub(crate) fn target() -> Target {
 
         options: TargetOptions {
             os: "zkvm".into(),
-            vendor: "polygon".into(),
+            vendor: "zisk".into(),
             linker_flavor: LinkerFlavor::Gnu(Cc::No, Lld::Yes),
             linker: Some("rust-lld".into()),
             cpu: "generic-rv32".into(),

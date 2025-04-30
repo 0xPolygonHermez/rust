@@ -14,5 +14,5 @@ libc = { version = "0.2.150", default-features = false }
 [lints.rust.unexpected_cfgs]
 level = "warn"
 check-cfg = [
-    'cfg(target_vendor, values("polygon"))',
+    'cfg(target_vendor, values("zisk"))',
 ]

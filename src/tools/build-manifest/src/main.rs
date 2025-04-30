@@ -135,7 +135,7 @@ static TARGETS: &[&str] = &[
     "powerpc64le-unknown-linux-musl",
     "riscv32i-unknown-none-elf",
     "riscv32im-risc0-zkvm-elf",
-    "riscv32ima-polygon-zkvm-elf",
+    "riscv32ima-zisk-zkvm-elf",
     "riscv32im-unknown-none-elf",
     "riscv32ima-unknown-none-elf",
     "riscv32imc-unknown-none-elf",
@@ -147,7 +147,7 @@ static TARGETS: &[&str] = &[
     "riscv64gc-unknown-none-elf",
     "riscv64gc-unknown-linux-gnu",
     "riscv64gc-unknown-linux-musl",
-    "riscv64ima-polygon-zkvm-elf",
+    "riscv64ima-zisk-zkvm-elf",
     "s390x-unknown-linux-gnu",
     "sparc64-unknown-linux-gnu",
     "sparcv9-sun-solaris",
@@ -602,11 +602,14 @@ impl Builder {
             })
             .collect();
 
-        dst.insert(pkg.manifest_component_name(), Package {
-            version: version_info.version.unwrap_or_default(),
-            git_commit_hash: version_info.git_commit,
-            target: targets,
-        });
+        dst.insert(
+            pkg.manifest_component_name(),
+            Package {
+                version: version_info.version.unwrap_or_default(),
+                git_commit_hash: version_info.git_commit,
+                target: targets,
+            },
+        );
     }
 
     fn url(&self, path: &Path) -> String {

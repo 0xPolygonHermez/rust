@@ -2,7 +2,7 @@ use crate::spec::{Cc, CodeModel, LinkerFlavor, Lld, PanicStrategy};
 use crate::spec::{RelocModel, SanitizerSet, Target, TargetOptions};
 
 // The PSP has custom linker requirements.
-const LINKER_SCRIPT: &str = include_str!("./riscv64ima_polygon_zkvm_elf_linker_script.ld");
+const LINKER_SCRIPT: &str = include_str!("./riscv64ima_zisk_zkvm_elf_linker_script.ld");
 
 pub(crate) fn target() -> Target {
     Target {
@@ -19,7 +19,7 @@ pub(crate) fn target() -> Target {
 
         options: TargetOptions {
             os: "zkvm".into(),
-            vendor: "polygon".into(),
+            vendor: "zisk".into(),
             linker_flavor: LinkerFlavor::Gnu(Cc::No, Lld::Yes),
             linker: Some("rust-lld".into()),
             cpu: "generic-rv64".into(),
