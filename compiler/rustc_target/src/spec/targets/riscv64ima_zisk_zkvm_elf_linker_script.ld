@@ -4,7 +4,7 @@ ENTRY(_start)
 
 MEMORY {
   rom   (xa) : ORIGIN = 0x80000000, LENGTH = 0x10000000
-  ram   (wxa) : ORIGIN = 0xa0020000, LENGTH = 0xFFE0000
+  ram   (wxa) : ORIGIN = 0xa0020000, LENGTH = 0x1FFE0000
 }
 
 PHDRS {
