@@ -57,7 +57,7 @@ jobs:
         with:
           repository: 0xPolygonHermez/zisk
           token: ${{ secrets.GITHUB_TOKEN }}
-          ref: develop
+          ref: pre-develop-0.8.0
           path: zisk
 
       - name: Check out 0xPolygonHermez/rust
