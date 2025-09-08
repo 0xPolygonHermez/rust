@@ -61,6 +61,9 @@ cfg_if::cfg_if! {
     } else if #[cfg(target_os = "teeos")] {
         mod teeos;
         pub use self::teeos::*;
+    } else if #[cfg(all(target_os = "zkvm", target_vendor = "zisk"))] {
+        mod zisk;
+        pub use self::zisk::*;
     } else if #[cfg(target_os = "zkvm")] {
         mod zkvm;
         pub use self::zkvm::*;

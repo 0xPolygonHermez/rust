@@ -20,3 +20,9 @@ libc = { version = "0.2", default-features = false }
 
 [target.'cfg(any(target_os = "android", target_os = "zkvm"))'.dependencies]
 alloc = { path = "../alloc" }
+
+[lints.rust.unexpected_cfgs]
+level = "warn"
+check-cfg = [
+    'cfg(target_vendor, values("zisk"))',
+]
