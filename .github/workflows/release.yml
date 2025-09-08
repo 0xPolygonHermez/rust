@@ -3,12 +3,13 @@ on:
   push:
     tags:
       - 'zisk-[0-9]+.[0-9]+.[0-9]+'
-
+  workflow_dispatch:
+  
 jobs:
   build:
     uses: ./.github/workflows/build.yml
     secrets: inherit
-    
+
   release:
     needs: build
     runs-on: ubuntu-latest
