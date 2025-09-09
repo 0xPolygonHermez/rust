@@ -54,7 +54,7 @@ jobs:
         with:
           repository: 0xPolygonHermez/zisk
           token: ${{ secrets.GITHUB_TOKEN }}
-          ref: main
+          ref: pre-develop-0.12.0
           path: zisk
 
       - name: Check out 0xPolygonHermez/rust
@@ -63,6 +63,14 @@ jobs:
           submodules: "recursive"
           path: rust
           fetch-depth: 0
+
+      - name: Prepare TMPDIR for gha
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          set -euxo pipefail
+          TMP_DIR=/tmp/gha
+          sudo install -d -o gha -g gha -m 0775 "$TMP_DIR"
+          echo "TMPDIR=$TMP_DIR" >> "$GITHUB_ENV"
 
       - name: Build
         run: GITHUB_ACTIONS=false ZISK_BUILD_DIR=$GITHUB_WORKSPACE cargo run --bin cargo-zisk -- sdk build-toolchain
