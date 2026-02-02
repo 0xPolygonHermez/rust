@@ -15,6 +15,11 @@ type c_int = i32;
     all(not(feature = "no-asm"), target_arch = "x86_64"),
     path = "x86_64.rs"
 )]
+// Zisk zkVM uses CSR instructions to signal memory operations to the runtime
+#[cfg_attr(
+    all(not(feature = "no-asm"), any(target_arch = "riscv32", target_arch = "riscv64"), target_os = "zkvm", target_vendor = "zisk"),
+    path = "riscv_zisk.rs"
+)]
 mod impls;
 
 intrinsics! {
