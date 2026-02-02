@@ -52,7 +52,8 @@ done
 
 if [ $APPLIED -gt 0 ]; then
     git add .
-    git commit -m "Apply Zisk LLVM patches ($APPLIED patches)"
+    # Disable GPG signing for this local commit (not needed for build patches)
+    git -c commit.gpgsign=false commit -m "Apply Zisk LLVM patches ($APPLIED patches)"
     echo "✓ $APPLIED patch(es) applied successfully"
 else
     echo "⚠ No new patches were applied"
