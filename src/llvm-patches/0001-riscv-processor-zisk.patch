@@ -1,0 +1,81 @@
+diff --git a/llvm/lib/Target/RISCV/RISCVProcessors.td b/llvm/lib/Target/RISCV/RISCVProcessors.td
+index b5eea138732a..6699c1cd2be3 100644
+--- a/llvm/lib/Target/RISCV/RISCVProcessors.td
++++ b/llvm/lib/Target/RISCV/RISCVProcessors.td
+@@ -34,11 +34,11 @@ class RISCVTuneInfo {
+   bits<32> MaxStoresPerMemset = 8;
+ 
+   bits<32> MaxGluedStoresPerMemcpy = 0;
+-  bits<32> MaxStoresPerMemcpyOptSize = 4;
+-  bits<32> MaxStoresPerMemcpy = 8;
++  bits<32> MaxStoresPerMemcpyOptSize = 3;
++  bits<32> MaxStoresPerMemcpy = 3;
+ 
+-  bits<32> MaxStoresPerMemmoveOptSize = 4;
+-  bits<32> MaxStoresPerMemmove = 8;
++  bits<32> MaxStoresPerMemmoveOptSize = 3;
++  bits<32> MaxStoresPerMemmove = 3;
+ 
+   bits<32> MaxLoadsPerMemcmpOptSize = 4;
+   bits<32> MaxLoadsPerMemcmp = 8;
+@@ -595,3 +595,60 @@ def RP2350_HAZARD3 : RISCVProcessorModel<"rp2350-hazard3",
+                                           FeatureStdExtZbkb,
+                                           FeatureStdExtZcb,
+                                           FeatureStdExtZcmp]>;
++
++//===----------------------------------------------------------------------===//
++// Zisk zkVM - Zero Knowledge Virtual Machine
++//===----------------------------------------------------------------------===//
++// Optimized for transpilation to ZK proofs, not for hardware execution.
++// Key differences from hardware targets:
++// - No memory clustering (uses more registers, bad for zkVM)
++// - Force function calls for memcpy/memset/etc (easier to detect and replace)
++// - No loop unrolling (simpler control flow)
++// - No jump tables (prefer if-else chains)
++// - Minimal code transformations (preserve structure for transpiler)
++
++class ZiskTuneInfo: RISCVTuneInfo {
++  // Minimal alignment - not relevant for zkVM
++  let PrefFunctionAlignment = 1;
++  let PrefLoopAlignment = 1;
++
++  // Disable memory clustering by using minimal cache line size
++  let CacheLineSize = 1;
++  let PrefetchDistance = 0;
++  let MinPrefetchStride = 1;
++  let MaxPrefetchIterationsAhead = 0;
++
++  // High threshold = prefer if-else over jump tables (more predictable)
++  let MinimumJumpTableEntries = 1000;
++
++  // Minimal tail duplication
++  let TailDupAggressiveThreshold = 0;
++
++  // CRITICAL: Force function calls instead of inline expansion
++  // This makes memcpy/memset/etc easy to detect and replace with precompiles
++  let MaxStoresPerMemsetOptSize = 0;
++  let MaxStoresPerMemset = 0;
++
++  let MaxGluedStoresPerMemcpy = 0;
++  let MaxStoresPerMemcpyOptSize = 0;
++  let MaxStoresPerMemcpy = 0;
++
++  let MaxStoresPerMemmoveOptSize = 0;
++  let MaxStoresPerMemmove = 0;
++
++  let MaxLoadsPerMemcmpOptSize = 0;
++  let MaxLoadsPerMemcmp = 0;
++
++  // Simple scheduling direction
++  let PostRASchedDirection = TopDown;
++}
++
++def ZISK : RISCVProcessorModel<"zisk",
++                               NoSchedModel,
++                               [Feature64Bit,
++                                FeatureStdExtI,
++                                FeatureStdExtM,
++                                FeatureStdExtA],
++                               [TuneNoDefaultUnroll,
++                                TuneDisableLatencySchedHeuristic]>,
++           ZiskTuneInfo;
