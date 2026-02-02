@@ -19,7 +19,8 @@ pub(crate) fn target() -> Target {
             vendor: "zisk".into(),
             linker_flavor: LinkerFlavor::Gnu(Cc::No, Lld::Yes),
             linker: Some("rust-lld".into()),
-            cpu: "generic-rv32".into(),
+            // cpu: "generic-rv32".into(),
+            cpu: "zisk".into(),
 
             max_atomic_width: Some(64),
             atomic_cas: true,
