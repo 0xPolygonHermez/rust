@@ -27,6 +27,99 @@ use crate::utils::helpers::{
 };
 use crate::{CLang, GitRepo, Kind, trace};
 
+/// Apply LLVM patches from src/llvm-patches/ directory if they exist.
+/// This is used to apply custom patches to LLVM without forking the LLVM repository.
+fn apply_llvm_patches(builder: &Builder<'_>) {
+    let patches_dir = builder.src.join("src/llvm-patches");
+    let llvm_dir = builder.src.join("src/llvm-project");
+
+    if !patches_dir.exists() {
+        return;
+    }
+
+    // Check if there are any .patch files
+    let patches: Vec<_> = match fs::read_dir(&patches_dir) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "patch"))
+            .collect(),
+        Err(_) => return,
+    };
+
+    if patches.is_empty() {
+        return;
+    }
+
+    // Check if patches are already applied by looking for uncommitted changes or our marker
+    let status_output = command("git")
+        .current_dir(&llvm_dir)
+        .args(["status", "--porcelain"])
+        .allow_failure()
+        .run_capture_stdout(builder)
+        .stdout();
+
+    // If there are already uncommitted changes, patches might be applied
+    if !status_output.trim().is_empty() {
+        builder.info("LLVM directory has local changes, skipping patch application");
+        return;
+    }
+
+    // Check if our patches are already committed
+    let log_output = command("git")
+        .current_dir(&llvm_dir)
+        .args(["log", "--oneline", "-1", "--grep=Apply Zisk LLVM patches"])
+        .allow_failure()
+        .run_capture_stdout(builder)
+        .stdout();
+
+    if !log_output.trim().is_empty() {
+        builder.info("LLVM patches already applied");
+        return;
+    }
+
+    builder.info("Applying LLVM patches from src/llvm-patches/");
+
+    let mut applied = 0;
+    for patch_entry in &patches {
+        let patch_path = patch_entry.path();
+        let patch_name = patch_path.file_name().unwrap().to_string_lossy();
+
+        // Check if patch can be applied
+        let check_result = command("git")
+            .current_dir(&llvm_dir)
+            .args(["apply", "--check"])
+            .arg(&patch_path)
+            .allow_failure()
+            .run_capture(builder);
+
+        if check_result.is_success() {
+            builder.info(&format!("  Applying: {}", patch_name));
+            command("git")
+                .current_dir(&llvm_dir)
+                .args(["apply"])
+                .arg(&patch_path)
+                .run(builder);
+            applied += 1;
+        } else {
+            builder.info(&format!("  Skipping: {} (already applied or conflicts)", patch_name));
+        }
+    }
+
+    if applied > 0 {
+        // Commit the changes so they persist
+        command("git")
+            .current_dir(&llvm_dir)
+            .args(["add", "."])
+            .run(builder);
+        command("git")
+            .current_dir(&llvm_dir)
+            .args(["-c", "commit.gpgsign=false", "commit", "-m"])
+            .arg(format!("Apply Zisk LLVM patches ({} patches)", applied))
+            .run(builder);
+        builder.info(&format!("✓ {} LLVM patch(es) applied successfully", applied));
+    }
+}
+
 #[derive(Clone)]
 pub struct LlvmResult {
     /// Path to llvm-config binary.
@@ -124,6 +217,8 @@ pub fn prebuilt_llvm_config(
     if handle_submodule_when_needed {
         // If submodules are disabled, this does nothing.
         builder.config.update_submodule("src/llvm-project");
+        // Apply custom LLVM patches from src/llvm-patches/ if they exist
+        apply_llvm_patches(builder);
     }
 
     let root = "src/llvm-project/llvm";
