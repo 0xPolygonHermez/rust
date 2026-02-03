@@ -51,12 +51,9 @@ fn apply_llvm_patches(builder: &Builder<'_>) {
     }
 
     // Check if patches are already applied by looking for uncommitted changes or our marker
-    let status_output = command("git")
-        .current_dir(&llvm_dir)
-        .args(["status", "--porcelain"])
-        .allow_failure()
-        .run_capture_stdout(builder)
-        .stdout();
+    let mut status_cmd = command("git");
+    status_cmd.current_dir(&llvm_dir).args(["status", "--porcelain"]);
+    let status_output = status_cmd.allow_failure().run_capture_stdout(builder).stdout();
 
     // If there are already uncommitted changes, patches might be applied
     if !status_output.trim().is_empty() {
@@ -65,12 +62,9 @@ fn apply_llvm_patches(builder: &Builder<'_>) {
     }
 
     // Check if our patches are already committed
-    let log_output = command("git")
-        .current_dir(&llvm_dir)
-        .args(["log", "--oneline", "-1", "--grep=Apply Zisk LLVM patches"])
-        .allow_failure()
-        .run_capture_stdout(builder)
-        .stdout();
+    let mut log_cmd = command("git");
+    log_cmd.current_dir(&llvm_dir).args(["log", "--oneline", "-1", "--grep=Apply Zisk LLVM patches"]);
+    let log_output = log_cmd.allow_failure().run_capture_stdout(builder).stdout();
 
     if !log_output.trim().is_empty() {
         builder.info("LLVM patches already applied");
@@ -85,12 +79,9 @@ fn apply_llvm_patches(builder: &Builder<'_>) {
         let patch_name = patch_path.file_name().unwrap().to_string_lossy();
 
         // Check if patch can be applied
-        let check_result = command("git")
-            .current_dir(&llvm_dir)
-            .args(["apply", "--check"])
-            .arg(&patch_path)
-            .allow_failure()
-            .run_capture(builder);
+        let mut check_cmd = command("git");
+        check_cmd.current_dir(&llvm_dir).args(["apply", "--check"]).arg(&patch_path);
+        let check_result = check_cmd.allow_failure().run_capture(builder);
 
         if check_result.is_success() {
             builder.info(&format!("  Applying: {}", patch_name));
