@@ -13,7 +13,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             triple: aarch64-apple-darwin
           - os: ubuntu-22.04
             triple: x86_64-unknown-linux-gnu
@@ -21,7 +21,7 @@ jobs:
     runs-on: ${{ matrix.runs-on || matrix.os }}
     steps:
       - name: Install macos dependencies
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-15'
         run: |
           brew install jq curl libomp protobuf openssl nasm pkgconf open-mpi libffi nlohmann-json libsodium
           brew tap riscv-software-src/riscv
