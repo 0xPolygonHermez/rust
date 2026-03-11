@@ -104,7 +104,10 @@ cfg_select! {
     target_os = "xous" => {
         mod xous;
     }
-    target_os = "zkvm" => {
+    all(target_os = "zkvm", not(target_vendor = "zisk")) => {
         mod zkvm;
+    }
+    all(target_os = "zkvm", target_vendor = "zisk") => {
+        mod zisk;
     }
 }
