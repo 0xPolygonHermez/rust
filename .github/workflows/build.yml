@@ -31,7 +31,8 @@ jobs:
           brew install jq curl libomp protobuf openssl nasm pkgconf open-mpi libffi nlohmann-json libsodium
 
           brew tap riscv-software-src/riscv
-          brew trust --formula riscv-software-src/riscv/riscv-tools
+          brew trust riscv-software-src/riscv
+
           brew install riscv-software-src/riscv/riscv-tools
 
       - name: Install Ubuntu dependencies
