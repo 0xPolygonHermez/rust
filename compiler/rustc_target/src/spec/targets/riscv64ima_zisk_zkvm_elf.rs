@@ -3,9 +3,6 @@ use crate::spec::{
     TargetOptions,
 };
 
-// The PSP has custom linker requirements.
-const LINKER_SCRIPT: &str = include_str!("./riscv64ima_zisk_zkvm_elf_linker_script.ld");
-
 pub(crate) fn target() -> Target {
     Target {
         data_layout: "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128".into(),
@@ -34,7 +31,6 @@ pub(crate) fn target() -> Target {
             emit_debug_gdb_scripts: false,
             eh_frame_header: false,
             supported_sanitizers: SanitizerSet::KERNELADDRESS,
-            link_script: Some(LINKER_SCRIPT.into()),
             ..Default::default()
         },
     }
