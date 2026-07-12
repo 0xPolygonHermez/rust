@@ -263,6 +263,75 @@ pub(crate) fn is_ci_llvm_available_for_target(
     true
 }
 
+/// ZISK zkVM: apply the in-tree LLVM patches under `src/llvm-patches/*.patch`
+/// to the `src/llvm-project` submodule before configuring and building LLVM.
+///
+/// This is how the ZISK toolchain injects its custom RISC-V backend changes
+/// (currently the DMA lowering for memcpy/memset/memcmp) without maintaining a
+/// separate LLVM fork: the patches live in-tree and are re-applied on every
+/// build. `cargo-zisk toolchain build` relies on this — with the
+/// `custom_rust_llvm` feature it deliberately leaves `src/llvm-project`
+/// uninitialised so this function runs against a freshly checked-out submodule.
+///
+/// The function is idempotent: a patch that is already present is detected via
+/// a reverse dry-run and skipped, so it is safe across incremental builds and
+/// `ZISK_BUILD_DIR` reuse. It is a no-op when `src/llvm-patches` is absent, so
+/// upstream (non-ZISK) checkouts are unaffected.
+pub fn apply_llvm_patches(builder: &Builder<'_>) {
+    let patches_dir = builder.src.join("src/llvm-patches");
+    if !patches_dir.is_dir() {
+        return;
+    }
+
+    let llvm_dir = builder.src.join("src/llvm-project");
+
+    // Collect the patches and apply them in a deterministic (sorted) order.
+    let mut patches: Vec<PathBuf> = t!(fs::read_dir(&patches_dir))
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "patch"))
+        .collect();
+    patches.sort();
+
+    for patch in patches {
+        // If a reverse dry-run succeeds the patch is already applied; skip it so
+        // repeated builds don't fail on an already-patched tree.
+        let already_applied = helpers::git(Some(&llvm_dir))
+            .allow_failure()
+            .args(["apply", "--reverse", "--check"])
+            .arg(&patch)
+            .run(builder);
+        if already_applied {
+            println!("ZISK: LLVM patch already applied, skipping: {}", patch.display());
+            continue;
+        }
+
+        // Forward dry-run first so a mismatch is reported clearly instead of
+        // leaving the tree half-patched.
+        let applies_cleanly = helpers::git(Some(&llvm_dir))
+            .allow_failure()
+            .args(["apply", "--check"])
+            .arg(&patch)
+            .run(builder);
+        if !applies_cleanly {
+            eprintln!("ZISK: LLVM patch does not apply cleanly: {}", patch.display());
+            eprintln!(
+                "      The `src/llvm-project` submodule is likely at a different \
+                 base commit than the patch was generated against, or it is in a \
+                 partially-patched state."
+            );
+            exit!(1);
+        }
+
+        println!("ZISK: applying LLVM patch: {}", patch.display());
+        let applied =
+            helpers::git(Some(&llvm_dir)).allow_failure().args(["apply"]).arg(&patch).run(builder);
+        if !applied {
+            eprintln!("ZISK: failed to apply LLVM patch: {}", patch.display());
+            exit!(1);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Llvm {
     pub target: TargetSelection,
@@ -303,6 +372,11 @@ impl Step for Llvm {
             LlvmBuildStatus::AlreadyBuilt(p) => return p,
             LlvmBuildStatus::ShouldBuild(m) => m,
         };
+
+        // ZISK zkVM: apply the in-tree LLVM patches (e.g. the RISC-V DMA
+        // lowering) now that the submodule is checked out and we know we are
+        // about to build LLVM. No-op on non-ZISK checkouts.
+        apply_llvm_patches(builder);
 
         if builder.llvm_link_shared() && target.is_windows() && !target.is_windows_gnullvm() {
             panic!("shared linking to LLVM is not currently supported on {}", target.triple);
