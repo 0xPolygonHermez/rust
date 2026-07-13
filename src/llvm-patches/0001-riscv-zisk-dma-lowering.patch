@@ -1,0 +1,454 @@
+diff --git a/llvm/lib/Target/RISCV/RISCVAsmPrinter.cpp b/llvm/lib/Target/RISCV/RISCVAsmPrinter.cpp
+index d4f5d8fca..e6ff700b3 100644
+--- a/llvm/lib/Target/RISCV/RISCVAsmPrinter.cpp
++++ b/llvm/lib/Target/RISCV/RISCVAsmPrinter.cpp
+@@ -104,6 +104,10 @@ public:
+   void LowerKCFI_CHECK(const MachineInstr &MI);
+   void EmitHwasanMemaccessSymbols(Module &M);
+ 
++  // Expand a ZISK DMA pseudo (memcpy/memset/memcmp) into the contiguous
++  // csrs/csrsi + add/addi marker sequence recognised by the ZISK transpiler.
++  void LowerZiskDma(const MachineInstr &MI);
++
+   // Wrapper needed for tblgenned pseudo lowering.
+   bool lowerOperand(const MachineOperand &MO, MCOperand &MCOp) const;
+ 
+@@ -344,6 +348,14 @@ void RISCVAsmPrinter::emitInstruction(const MachineInstr *MI) {
+   case TargetOpcode::PATCHABLE_TAIL_CALL:
+     LowerPATCHABLE_TAIL_CALL(MI);
+     return;
++  case RISCV::PseudoZiskMemcpyImm:
++  case RISCV::PseudoZiskMemcpyReg:
++  case RISCV::PseudoZiskMemcmpImm:
++  case RISCV::PseudoZiskMemcmpReg:
++  case RISCV::PseudoZiskMemsetImm:
++  case RISCV::PseudoZiskMemsetReg:
++    LowerZiskDma(*MI);
++    return;
+   }
+ 
+   MCInst OutInst;
+@@ -351,6 +363,89 @@ void RISCVAsmPrinter::emitInstruction(const MachineInstr *MI) {
+     EmitToStreamer(*OutStreamer, OutInst);
+ }
+ 
++void RISCVAsmPrinter::LowerZiskDma(const MachineInstr &MI) {
++  // CSR numbers of the ZISK DMA markers (see ziskos zisk_definitions and the
++  // transpiler in zisk/core/src/riscv2zisk_context.rs).
++  constexpr int64_t CsrMemcpy = 0x813;
++  constexpr int64_t CsrMemcmp = 0x814;
++  constexpr int64_t CsrMemset = 0x816;
++  const Register X0 = RISCV::X0;
++
++  auto Csrs = [&](int64_t Csr, Register Rs1) {
++    EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::CSRRS)
++                                     .addReg(X0)
++                                     .addImm(Csr)
++                                     .addReg(Rs1));
++  };
++
++  switch (MI.getOpcode()) {
++  default:
++    llvm_unreachable("Unexpected ZISK DMA pseudo");
++  case RISCV::PseudoZiskMemcpyImm: {
++    // csrs 0x813, src ; addi x0, dst, size
++    Csrs(CsrMemcpy, MI.getOperand(1).getReg());
++    EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::ADDI)
++                                     .addReg(X0)
++                                     .addReg(MI.getOperand(0).getReg())
++                                     .addImm(MI.getOperand(2).getImm()));
++    return;
++  }
++  case RISCV::PseudoZiskMemcpyReg: {
++    // csrs 0x813, src ; add x0, dst, sizereg
++    Csrs(CsrMemcpy, MI.getOperand(1).getReg());
++    EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::ADD)
++                                     .addReg(X0)
++                                     .addReg(MI.getOperand(0).getReg())
++                                     .addReg(MI.getOperand(2).getReg()));
++    return;
++  }
++  case RISCV::PseudoZiskMemcmpImm: {
++    // csrs 0x814, src ; addi res, dst, size
++    Csrs(CsrMemcmp, MI.getOperand(2).getReg());
++    EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::ADDI)
++                                     .addReg(MI.getOperand(0).getReg())
++                                     .addReg(MI.getOperand(1).getReg())
++                                     .addImm(MI.getOperand(3).getImm()));
++    return;
++  }
++  case RISCV::PseudoZiskMemcmpReg: {
++    // csrs 0x814, src ; add res, dst, sizereg
++    Csrs(CsrMemcmp, MI.getOperand(2).getReg());
++    EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::ADD)
++                                     .addReg(MI.getOperand(0).getReg())
++                                     .addReg(MI.getOperand(1).getReg())
++                                     .addReg(MI.getOperand(3).getReg()));
++    return;
++  }
++  case RISCV::PseudoZiskMemsetImm: {
++    // csrsi 0x816, 2 ; addi x0, dst, size ; addi x0, dst, val
++    Register Dst = MI.getOperand(0).getReg();
++    EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::CSRRSI)
++                                     .addReg(X0)
++                                     .addImm(CsrMemset)
++                                     .addImm(2));
++    EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::ADDI)
++                                     .addReg(X0)
++                                     .addReg(Dst)
++                                     .addImm(MI.getOperand(1).getImm()));
++    EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::ADDI)
++                                     .addReg(X0)
++                                     .addReg(Dst)
++                                     .addImm(MI.getOperand(2).getImm()));
++    return;
++  }
++  case RISCV::PseudoZiskMemsetReg: {
++    // csrs 0x816, dst ; addi x0, sizereg, val
++    Csrs(CsrMemset, MI.getOperand(0).getReg());
++    EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::ADDI)
++                                     .addReg(X0)
++                                     .addReg(MI.getOperand(1).getReg())
++                                     .addImm(MI.getOperand(2).getImm()));
++    return;
++  }
++  }
++}
++
+ bool RISCVAsmPrinter::PrintAsmOperand(const MachineInstr *MI, unsigned OpNo,
+                                       const char *ExtraCode, raw_ostream &OS) {
+   // First try the generic code, which knows about modifiers like 'c' and 'n'.
+diff --git a/llvm/lib/Target/RISCV/RISCVFeatures.td b/llvm/lib/Target/RISCV/RISCVFeatures.td
+index f9c0b54be..6d30d802e 100644
+--- a/llvm/lib/Target/RISCV/RISCVFeatures.td
++++ b/llvm/lib/Target/RISCV/RISCVFeatures.td
+@@ -1693,6 +1693,16 @@ def FeatureUnalignedVectorMem
+                       "true", "Has reasonably performant unaligned vector "
+                       "loads and stores">;
+ 
++// ZISK zkVM: lower memcpy/memset/memcmp to inline DMA precompile markers
++// (csrs 0x81x + add/addi) instead of emitting an ABI call. See
++// RISCVInstrInfoZisk.td and RISCVSelectionDAGInfo.cpp.
++def FeatureZiskDma
++   : SubtargetFeature<"zisk-dma", "HasZiskDma", "true",
++                      "Lower memcpy/memset/memcmp to ZISK DMA instructions">;
++def HasZiskDma : Predicate<"Subtarget->hasZiskDma()">,
++                 AssemblerPredicate<(all_of FeatureZiskDma),
++                     "'zisk-dma' (ZISK zkVM DMA lowering)">;
++
+ def TuneNLogNVRGather
+    : SubtargetFeature<"log-vrgather", "RISCVVRGatherCostModel", "NLog2N",
+                       "Has vrgather.vv with LMUL*log2(LMUL) latency">;
+diff --git a/llvm/lib/Target/RISCV/RISCVISelLowering.cpp b/llvm/lib/Target/RISCV/RISCVISelLowering.cpp
+index 567ef2ff1..08b3d2aad 100644
+--- a/llvm/lib/Target/RISCV/RISCVISelLowering.cpp
++++ b/llvm/lib/Target/RISCV/RISCVISelLowering.cpp
+@@ -1683,6 +1683,28 @@ RISCVTargetLowering::RISCVTargetLowering(const TargetMachine &TM,
+ 
+   MaxLoadsPerMemcmpOptSize = Subtarget.getMaxLoadsPerMemcmp(/*OptSize=*/true);
+   MaxLoadsPerMemcmp = Subtarget.getMaxLoadsPerMemcmp(/*OptSize=*/false);
++
++  // ZISK zkVM: when the DMA precompile is available, cap the inline
++  // mem{cpy,set,move,cmp} expansion at a small size so that only tiny constant
++  // sizes are lowered to inline load/store sequences and everything larger is
++  // routed to the DMA precompile. SelectionDAG tries the inline expansion
++  // before consulting EmitTargetCodeForMem* (see SelectionDAG::getMemcpy), so
++  // the inline limit is what actually decides the boundary: a limit of 2 allows
++  // up to two XLen-sized memory ops (== 16 bytes on RV64, e.g. a 16-byte
++  // aligned copy as 2 ld + 2 sd) inline; any constant size needing 3+ ops (>16
++  // bytes) exceeds the limit and falls through to the DMA lowering. Keep this
++  // value in sync with ZiskDmaMaxInlineBytes in RISCVSelectionDAGInfo.cpp.
++  if (Subtarget.hasZiskDma()) {
++    MaxStoresPerMemsetOptSize = 2;
++    MaxStoresPerMemset = 2;
++    MaxGluedStoresPerMemcpy = 0;
++    MaxStoresPerMemcpyOptSize = 2;
++    MaxStoresPerMemcpy = 2;
++    MaxStoresPerMemmoveOptSize = 2;
++    MaxStoresPerMemmove = 2;
++    MaxLoadsPerMemcmpOptSize = 2;
++    MaxLoadsPerMemcmp = 2;
++  }
+ }
+ 
+ EVT RISCVTargetLowering::getSetCCResultType(const DataLayout &DL,
+diff --git a/llvm/lib/Target/RISCV/RISCVInstrInfo.td b/llvm/lib/Target/RISCV/RISCVInstrInfo.td
+index f63531a01..23a0502ea 100644
+--- a/llvm/lib/Target/RISCV/RISCVInstrInfo.td
++++ b/llvm/lib/Target/RISCV/RISCVInstrInfo.td
+@@ -2309,6 +2309,12 @@ include "RISCVInstrInfoXMips.td"
+ include "RISCVInstrInfoXRivos.td"
+ include "RISCVInstrInfoXAndes.td"
+ 
++//===----------------------------------------------------------------------===//
++// ZISK zkVM DMA lowering
++//===----------------------------------------------------------------------===//
++
++include "RISCVInstrInfoZisk.td"
++
+ //===----------------------------------------------------------------------===//
+ // Global ISel
+ //===----------------------------------------------------------------------===//
+diff --git a/llvm/lib/Target/RISCV/RISCVInstrInfoZisk.td b/llvm/lib/Target/RISCV/RISCVInstrInfoZisk.td
+new file mode 100644
+index 000000000..c9d24a779
+--- /dev/null
++++ b/llvm/lib/Target/RISCV/RISCVInstrInfoZisk.td
+@@ -0,0 +1,104 @@
++//===-- RISCVInstrInfoZisk.td - ZISK DMA custom lowering ---*- tablegen -*-===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++//
++// This file describes the lowering of memcpy/memset/memcmp to the ZISK DMA
++// "precompile" instructions used by the ZISK zkVM. The ZISK ELF transpiler
++// recognises a `csrs/csrsi 0x81x, reg` marker immediately followed by an
++// `add`/`addi` and folds the pair into a single DMA operation (x86 `rep`-style),
++// avoiding the cost of an ABI call to memcpy/memset/memcmp. See
++// ziskos/entrypoint/src/dma.rs for the reference inline-assembly patterns.
++//
++//===----------------------------------------------------------------------===//
++
++// Fill byte for memset: an 8-bit unsigned immediate usable in ISel patterns.
++def uimm8_zisk : RISCVUImmLeafOp<8>;
++
++//===----------------------------------------------------------------------===//
++// Custom ISD nodes
++//===----------------------------------------------------------------------===//
++
++// (dst, src, size) -> chain
++def SDT_RISCVDmaCopy : SDTypeProfile<0, 3,
++    [SDTCisPtrTy<0>, SDTCisPtrTy<1>, SDTCisVT<2, XLenVT>]>;
++def riscv_dma_memcpy : RVSDNode<"DMA_MEMCPY", SDT_RISCVDmaCopy,
++    [SDNPHasChain, SDNPMayStore, SDNPMayLoad]>;
++
++// result = (dst, src, size); also produces chain
++def SDT_RISCVDmaCmp : SDTypeProfile<1, 3,
++    [SDTCisVT<0, XLenVT>, SDTCisPtrTy<1>, SDTCisPtrTy<2>, SDTCisVT<3, XLenVT>]>;
++def riscv_dma_memcmp : RVSDNode<"DMA_MEMCMP", SDT_RISCVDmaCmp,
++    [SDNPHasChain, SDNPMayLoad]>;
++
++// (dst, value, size) -> chain. `value` must be a constant byte (0..255).
++def SDT_RISCVDmaSet : SDTypeProfile<0, 3,
++    [SDTCisPtrTy<0>, SDTCisVT<1, XLenVT>, SDTCisVT<2, XLenVT>]>;
++def riscv_dma_memset : RVSDNode<"DMA_MEMSET", SDT_RISCVDmaSet,
++    [SDNPHasChain, SDNPMayStore]>;
++
++//===----------------------------------------------------------------------===//
++// Pseudo instructions
++//
++// These are kept atomic through the whole pipeline (register allocation, etc.)
++// and only expanded into the real two/three instruction marker sequence in
++// RISCVAsmPrinter, which guarantees the instructions stay contiguous so the
++// transpiler can match them.
++//===----------------------------------------------------------------------===//
++
++let Predicates = [HasZiskDma], hasSideEffects = 1, isCodeGenOnly = 1 in {
++let mayLoad = 1, mayStore = 1 in {
++def PseudoZiskMemcpyImm
++    : Pseudo<(outs), (ins GPR:$dst, GPR:$src, simm12:$size), []> { let Size = 8; }
++def PseudoZiskMemcpyReg
++    : Pseudo<(outs), (ins GPR:$dst, GPR:$src, GPR:$size), []> { let Size = 8; }
++} // mayLoad, mayStore
++
++let mayLoad = 1 in {
++def PseudoZiskMemcmpImm
++    : Pseudo<(outs GPR:$res), (ins GPR:$dst, GPR:$src, simm12:$size), []> {
++  let Size = 8;
++}
++def PseudoZiskMemcmpReg
++    : Pseudo<(outs GPR:$res), (ins GPR:$dst, GPR:$src, GPR:$size), []> {
++  let Size = 8;
++}
++} // mayLoad
++
++let mayStore = 1 in {
++def PseudoZiskMemsetImm
++    : Pseudo<(outs), (ins GPR:$dst, simm12:$size, uimm8_zisk:$val), []> {
++  let Size = 12;
++}
++def PseudoZiskMemsetReg
++    : Pseudo<(outs), (ins GPR:$dst, GPR:$size, uimm8_zisk:$val), []> {
++  let Size = 8;
++}
++} // mayStore
++} // Predicates = [HasZiskDma], hasSideEffects, isCodeGenOnly
++
++//===----------------------------------------------------------------------===//
++// Selection patterns
++//===----------------------------------------------------------------------===//
++
++let Predicates = [HasZiskDma] in {
++// memcpy: prefer the immediate form when the size fits a 12-bit signed
++// immediate (the addi count field); otherwise materialise the size in a GPR.
++def : Pat<(riscv_dma_memcpy GPR:$dst, GPR:$src, simm12:$size),
++          (PseudoZiskMemcpyImm GPR:$dst, GPR:$src, simm12:$size)>;
++def : Pat<(riscv_dma_memcpy GPR:$dst, GPR:$src, GPR:$size),
++          (PseudoZiskMemcpyReg GPR:$dst, GPR:$src, GPR:$size)>;
++
++def : Pat<(riscv_dma_memcmp GPR:$dst, GPR:$src, simm12:$size),
++          (PseudoZiskMemcmpImm GPR:$dst, GPR:$src, simm12:$size)>;
++def : Pat<(riscv_dma_memcmp GPR:$dst, GPR:$src, GPR:$size),
++          (PseudoZiskMemcmpReg GPR:$dst, GPR:$src, GPR:$size)>;
++
++def : Pat<(riscv_dma_memset GPR:$dst, uimm8_zisk:$val, simm12:$size),
++          (PseudoZiskMemsetImm GPR:$dst, simm12:$size, uimm8_zisk:$val)>;
++def : Pat<(riscv_dma_memset GPR:$dst, uimm8_zisk:$val, GPR:$size),
++          (PseudoZiskMemsetReg GPR:$dst, GPR:$size, uimm8_zisk:$val)>;
++} // Predicates = [HasZiskDma]
+diff --git a/llvm/lib/Target/RISCV/RISCVSelectionDAGInfo.cpp b/llvm/lib/Target/RISCV/RISCVSelectionDAGInfo.cpp
+index 668e59686..1525b81c3 100644
+--- a/llvm/lib/Target/RISCV/RISCVSelectionDAGInfo.cpp
++++ b/llvm/lib/Target/RISCV/RISCVSelectionDAGInfo.cpp
+@@ -7,17 +7,109 @@
+ //===----------------------------------------------------------------------===//
+ 
+ #include "RISCVSelectionDAGInfo.h"
++#include "RISCVSubtarget.h"
+ 
+ #define GET_SDNODE_DESC
+ #include "RISCVGenSDNodeInfo.inc"
+ 
+ using namespace llvm;
+ 
++// Maximum copy/set/compare size (in bytes) for which the default (non-DMA)
++// lowering is preferred over the ZISK DMA precompile. Constant sizes up to this
++// many bytes are handled by the ordinary inline load/store expansion (e.g. a
++// 16-byte aligned copy becomes 2 ld + 2 sd); larger constant sizes are routed
++// to the DMA precompile. Keep this in sync with the MaxStores*/MaxLoads* limits
++// set in RISCVTargetLowering (a limit of 2 XLen-sized ops == 16 bytes on RV64).
++// A non-constant (runtime) size always uses the DMA path.
++static constexpr uint64_t ZiskDmaMaxInlineBytes = 16;
++
++// Returns true if a constant size is small enough to prefer the default
++// (non-DMA) lowering.
++static bool isZiskDmaTooSmall(SDValue Size) {
++  auto *C = dyn_cast<ConstantSDNode>(Size);
++  return C && C->getZExtValue() <= ZiskDmaMaxInlineBytes;
++}
++
+ RISCVSelectionDAGInfo::RISCVSelectionDAGInfo()
+     : SelectionDAGGenTargetInfo(RISCVGenSDNodeInfo) {}
+ 
+ RISCVSelectionDAGInfo::~RISCVSelectionDAGInfo() = default;
+ 
++SDValue RISCVSelectionDAGInfo::EmitTargetCodeForMemcpy(
++    SelectionDAG &DAG, const SDLoc &dl, SDValue Chain, SDValue Dst, SDValue Src,
++    SDValue Size, Align Alignment, bool isVolatile, bool AlwaysInline,
++    MachinePointerInfo DstPtrInfo, MachinePointerInfo SrcPtrInfo) const {
++  const RISCVSubtarget &STI =
++      DAG.getMachineFunction().getSubtarget<RISCVSubtarget>();
++  if (!STI.hasZiskDma() || isVolatile || isZiskDmaTooSmall(Size))
++    return SDValue();
++
++  EVT XLenVT = STI.getXLenVT();
++  Size = DAG.getZExtOrTrunc(Size, dl, XLenVT);
++  return DAG.getNode(RISCVISD::DMA_MEMCPY, dl, DAG.getVTList(MVT::Other),
++                     {Chain, Dst, Src, Size});
++}
++
++SDValue RISCVSelectionDAGInfo::EmitTargetCodeForMemmove(
++    SelectionDAG &DAG, const SDLoc &dl, SDValue Chain, SDValue Dst, SDValue Src,
++    SDValue Size, Align Alignment, bool isVolatile,
++    MachinePointerInfo DstPtrInfo, MachinePointerInfo SrcPtrInfo) const {
++  const RISCVSubtarget &STI =
++      DAG.getMachineFunction().getSubtarget<RISCVSubtarget>();
++  if (!STI.hasZiskDma() || isVolatile || isZiskDmaTooSmall(Size))
++    return SDValue();
++
++  // The ZISK memcpy DMA precompile handles overlapping src/dst regions, so it
++  // satisfies the memmove contract and can be reused directly.
++  EVT XLenVT = STI.getXLenVT();
++  Size = DAG.getZExtOrTrunc(Size, dl, XLenVT);
++  return DAG.getNode(RISCVISD::DMA_MEMCPY, dl, DAG.getVTList(MVT::Other),
++                     {Chain, Dst, Src, Size});
++}
++
++SDValue RISCVSelectionDAGInfo::EmitTargetCodeForMemset(
++    SelectionDAG &DAG, const SDLoc &dl, SDValue Chain, SDValue Dst, SDValue Val,
++    SDValue Size, Align Alignment, bool isVolatile, bool AlwaysInline,
++    MachinePointerInfo DstPtrInfo) const {
++  const RISCVSubtarget &STI =
++      DAG.getMachineFunction().getSubtarget<RISCVSubtarget>();
++  if (!STI.hasZiskDma() || isVolatile || isZiskDmaTooSmall(Size))
++    return SDValue();
++
++  // The ZISK memset precompile encodes the fill byte as an immediate, so it can
++  // only be used when the value is a compile-time constant byte. Otherwise fall
++  // back to the default lowering (libcall / inline stores).
++  auto *ValC = dyn_cast<ConstantSDNode>(Val);
++  if (!ValC)
++    return SDValue();
++
++  EVT XLenVT = STI.getXLenVT();
++  SDValue ByteVal = DAG.getConstant(ValC->getZExtValue() & 0xFF, dl, XLenVT);
++  Size = DAG.getZExtOrTrunc(Size, dl, XLenVT);
++  return DAG.getNode(RISCVISD::DMA_MEMSET, dl, DAG.getVTList(MVT::Other),
++                     {Chain, Dst, ByteVal, Size});
++}
++
++std::pair<SDValue, SDValue> RISCVSelectionDAGInfo::EmitTargetCodeForMemcmp(
++    SelectionDAG &DAG, const SDLoc &dl, SDValue Chain, SDValue Op1, SDValue Op2,
++    SDValue Op3, MachinePointerInfo Op1PtrInfo,
++    MachinePointerInfo Op2PtrInfo) const {
++  const RISCVSubtarget &STI =
++      DAG.getMachineFunction().getSubtarget<RISCVSubtarget>();
++  if (!STI.hasZiskDma() || isZiskDmaTooSmall(Op3))
++    return std::make_pair(SDValue(), SDValue());
++
++  EVT XLenVT = STI.getXLenVT();
++  SDValue Size = DAG.getZExtOrTrunc(Op3, dl, XLenVT);
++  // memcmp(Op1, Op2): Op1 is the destination operand of the marker, Op2 the
++  // source (csrs). The precompile result is byte(Op1) - byte(Op2), matching the
++  // C memcmp contract; processIntegerCallValue truncates it to the call type.
++  SDValue Node =
++      DAG.getNode(RISCVISD::DMA_MEMCMP, dl, DAG.getVTList(XLenVT, MVT::Other),
++                  {Chain, Op1, Op2, Size});
++  return std::make_pair(Node.getValue(0), Node.getValue(1));
++}
++
+ void RISCVSelectionDAGInfo::verifyTargetNode(const SelectionDAG &DAG,
+                                              const SDNode *N) const {
+ #ifndef NDEBUG
+diff --git a/llvm/lib/Target/RISCV/RISCVSelectionDAGInfo.h b/llvm/lib/Target/RISCV/RISCVSelectionDAGInfo.h
+index 641189f86..149695b14 100644
+--- a/llvm/lib/Target/RISCV/RISCVSelectionDAGInfo.h
++++ b/llvm/lib/Target/RISCV/RISCVSelectionDAGInfo.h
+@@ -34,6 +34,34 @@ public:
+   void verifyTargetNode(const SelectionDAG &DAG,
+                         const SDNode *N) const override;
+ 
++  // ZISK zkVM: lower memcpy/memmove/memset/memcmp to inline DMA precompile
++  // markers when the `zisk-dma` subtarget feature is enabled.
++  SDValue EmitTargetCodeForMemcpy(SelectionDAG &DAG, const SDLoc &dl,
++                                  SDValue Chain, SDValue Dst, SDValue Src,
++                                  SDValue Size, Align Alignment, bool isVolatile,
++                                  bool AlwaysInline,
++                                  MachinePointerInfo DstPtrInfo,
++                                  MachinePointerInfo SrcPtrInfo) const override;
++
++  SDValue EmitTargetCodeForMemmove(SelectionDAG &DAG, const SDLoc &dl,
++                                   SDValue Chain, SDValue Dst, SDValue Src,
++                                   SDValue Size, Align Alignment,
++                                   bool isVolatile,
++                                   MachinePointerInfo DstPtrInfo,
++                                   MachinePointerInfo SrcPtrInfo) const override;
++
++  SDValue EmitTargetCodeForMemset(SelectionDAG &DAG, const SDLoc &dl,
++                                  SDValue Chain, SDValue Dst, SDValue Val,
++                                  SDValue Size, Align Alignment, bool isVolatile,
++                                  bool AlwaysInline,
++                                  MachinePointerInfo DstPtrInfo) const override;
++
++  std::pair<SDValue, SDValue>
++  EmitTargetCodeForMemcmp(SelectionDAG &DAG, const SDLoc &dl, SDValue Chain,
++                          SDValue Op1, SDValue Op2, SDValue Op3,
++                          MachinePointerInfo Op1PtrInfo,
++                          MachinePointerInfo Op2PtrInfo) const override;
++
+   bool hasPassthruOp(unsigned Opcode) const {
+     return GenNodeInfo.getDesc(Opcode).TSFlags & RISCVISD::HasPassthruOpMask;
+   }
