@@ -1426,73 +1426,75 @@ const unsafe fn swap_nonoverlapping_const<T>(x: *mut T, y: *mut T, count: usize)
     }
 }
 
-// Don't let MIR inline this, because we really want it to keep its noalias metadata
-#[rustc_no_mir_inline]
-#[inline]
-fn swap_chunk<const N: usize>(x: &mut MaybeUninit<[u8; N]>, y: &mut MaybeUninit<[u8; N]>) {
-    let a = *x;
-    let b = *y;
-    *x = b;
-    *y = a;
-}
-
 #[inline]
 unsafe fn swap_nonoverlapping_bytes(x: *mut u8, y: *mut u8, bytes: NonZero<usize>) {
-    // Same as `swap_nonoverlapping::<[u8; N]>`.
-    unsafe fn swap_nonoverlapping_chunks<const N: usize>(
-        x: *mut MaybeUninit<[u8; N]>,
-        y: *mut MaybeUninit<[u8; N]>,
-        chunks: NonZero<usize>,
-    ) {
-        let chunks = chunks.get();
-        for i in 0..chunks {
-            // SAFETY: i is in [0, chunks) so the adds and dereferences are in-bounds.
-            unsafe { swap_chunk(&mut *x.add(i), &mut *y.add(i)) };
-        }
-    }
-
-    // Same as `swap_nonoverlapping_bytes`, but accepts at most 1+2+4=7 bytes
-    #[inline]
-    unsafe fn swap_nonoverlapping_short(x: *mut u8, y: *mut u8, bytes: NonZero<usize>) {
-        // Tail handling for auto-vectorized code sometimes has element-at-a-time behaviour,
-        // see <https://github.com/rust-lang/rust/issues/134946>.
-        // By swapping as different sizes, rather than as a loop over bytes,
-        // we make sure not to end up with, say, seven byte-at-a-time copies.
-
-        let bytes = bytes.get();
-        let mut i = 0;
-        macro_rules! swap_prefix {
-            ($($n:literal)+) => {$(
-                if (bytes & $n) != 0 {
-                    // SAFETY: `i` can only have the same bits set as those in bytes,
-                    // so these `add`s are in-bounds of `bytes`.  But the bit for
-                    // `$n` hasn't been set yet, so the `$n` bytes that `swap_chunk`
-                    // will read and write are within the usable range.
-                    unsafe { swap_chunk::<$n>(&mut*x.add(i).cast(), &mut*y.add(i).cast()) };
-                    i |= $n;
-                }
-            )+};
-        }
-        swap_prefix!(4 2 1);
-        debug_assert_eq!(i, bytes);
-    }
-
-    const CHUNK_SIZE: usize = size_of::<*const ()>();
     let bytes = bytes.get();
+    let mut i = 0;
 
-    let chunks = bytes / CHUNK_SIZE;
-    let tail = bytes % CHUNK_SIZE;
-    if let Some(chunks) = NonZero::new(chunks) {
-        // SAFETY: this is bytes/CHUNK_SIZE*CHUNK_SIZE bytes, which is <= bytes,
-        // so it's within the range of our non-overlapping bytes.
-        unsafe { swap_nonoverlapping_chunks::<CHUNK_SIZE>(x.cast(), y.cast(), chunks) };
+    // ZISK: keep the swap on wide aligned `ld`/`sd` on riscv64 (which lacks cheap
+    // unaligned wide accesses) instead of degrading to byte-at-a-time. When `x` and
+    // `y` share the same misalignment, bring both to word alignment with a common
+    // byte prologue and then swap `usize`-sized words for the aligned body, leaving a
+    // byte tail. `MaybeUninit` is used because the swapped bytes may be
+    // padding/uninitialized (loading uninit memory as an initialized value is UB);
+    // `MaybeUninit<usize>` keeps `usize` alignment (unlike `MaybeUninit<[u8; 8]>`,
+    // which is align 1), which is what makes LLVM emit wide accesses. When the
+    // misalignments differ, or the buffer is too small to hold a whole word after
+    // aligning, everything falls to the byte loop.
+    const W: usize = size_of::<usize>();
+    if (x as usize) % W == (y as usize) % W {
+        let off = (x as usize) % W;
+        // Bytes needed to bring both pointers up to word alignment (0 when aligned).
+        let head = (W - off) % W;
+        // Only worth it if a whole word remains after the prologue. `head < W`, so
+        // `head + W` cannot overflow.
+        if bytes >= head + W {
+            // Byte prologue up to the first word-aligned offset.
+            while i < head {
+                // SAFETY: `i < head` and `head + W <= bytes`, so `i < bytes` and the
+                // access is in-bounds; the ranges are non-overlapping so they do not
+                // alias.
+                unsafe {
+                    let px = x.add(i).cast::<MaybeUninit<u8>>();
+                    let py = y.add(i).cast::<MaybeUninit<u8>>();
+                    let t = px.read();
+                    px.write(py.read());
+                    py.write(t);
+                }
+                i += 1;
+            }
+            // Aligned word body: after the prologue `x.add(i)`/`y.add(i)` are
+            // word-aligned, and stay so because `i` advances by `W` from that
+            // aligned base. (`i` itself is `head + k*W`, congruent to `head` mod
+            // `W` — not necessarily a multiple of `W` when `off != 0`; it is the
+            // address, not `i`, that is word-aligned.)
+            while i + W <= bytes {
+                // SAFETY: both pointers are word-aligned here, so the cast pointers
+                // are aligned for `MaybeUninit<usize>`; `i + W <= bytes` keeps the
+                // accesses in-bounds and the ranges do not alias.
+                unsafe {
+                    let px = x.add(i).cast::<MaybeUninit<usize>>();
+                    let py = y.add(i).cast::<MaybeUninit<usize>>();
+                    let t = px.read();
+                    px.write(py.read());
+                    py.write(t);
+                }
+                i += W;
+            }
+        }
     }
-    if let Some(tail) = NonZero::new(tail) {
-        const { assert!(CHUNK_SIZE <= 8) };
-        let delta = chunks * CHUNK_SIZE;
-        // SAFETY: the tail length is below CHUNK SIZE because of the remainder,
-        // and CHUNK_SIZE is at most 8 by the const assert, so tail <= 7
-        unsafe { swap_nonoverlapping_short(x.add(delta), y.add(delta), tail) };
+    // Byte tail — also the whole buffer when the fast path above was skipped.
+    while i < bytes {
+        // SAFETY: `i < bytes` keeps both accesses in-bounds, and `x`/`y` are
+        // non-overlapping so they do not alias.
+        unsafe {
+            let px = x.add(i).cast::<MaybeUninit<u8>>();
+            let py = y.add(i).cast::<MaybeUninit<u8>>();
+            let t = px.read();
+            px.write(py.read());
+            py.write(t);
+        }
+        i += 1;
     }
 }
 
