@@ -81,7 +81,7 @@ jobs:
           echo "TMPDIR=$TMP_DIR" >> "$GITHUB_ENV"
 
       - name: Build
-        run: GITHUB_ACTIONS=false ZISK_BUILD_DIR=$GITHUB_WORKSPACE cargo run --bin cargo-zisk -- sdk build-toolchain
+        run: GITHUB_ACTIONS=false ZISK_BUILD_DIR=$GITHUB_WORKSPACE cargo run --bin cargo-zisk -- toolchain build
         working-directory: zisk
 
       - name: Archive build output
