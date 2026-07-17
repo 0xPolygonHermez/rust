@@ -305,6 +305,22 @@ pub fn apply_llvm_patches(builder: &Builder<'_>) {
             continue;
         }
 
+        // The patch is not fully applied. It may still be *partially* applied:
+        // e.g. a previous run applied it and bootstrap then re-synced the
+        // submodule, which resets tracked files but leaves the patch's new
+        // (untracked) files behind. `git apply` would then fail with
+        // "already exists in working directory" plus mismatched hunks. Restore a
+        // pristine RISC-V backend tree so the forward apply is deterministic.
+        // (All ZISK patches touch only `llvm/lib/Target/RISCV`.)
+        helpers::git(Some(&llvm_dir))
+            .allow_failure()
+            .args(["checkout", "--", "llvm/lib/Target/RISCV"])
+            .run(builder);
+        helpers::git(Some(&llvm_dir))
+            .allow_failure()
+            .args(["clean", "-fd", "llvm/lib/Target/RISCV"])
+            .run(builder);
+
         // Forward dry-run first so a mismatch is reported clearly instead of
         // leaving the tree half-patched.
         let applies_cleanly = helpers::git(Some(&llvm_dir))
