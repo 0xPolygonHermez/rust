@@ -295,11 +295,17 @@ pub fn apply_llvm_patches(builder: &Builder<'_>) {
     for patch in patches {
         // If a reverse dry-run succeeds the patch is already applied; skip it so
         // repeated builds don't fail on an already-patched tree.
+        //
+        // Use `run_capture` (not `run`) so this probe does NOT print git's
+        // "error: patch does not apply" output when it fails: failure is the
+        // normal case here (tree pristine or partially patched), and printing it
+        // makes a healthy build look broken in the logs.
         let already_applied = helpers::git(Some(&llvm_dir))
             .allow_failure()
             .args(["apply", "--reverse", "--check"])
             .arg(&patch)
-            .run(builder);
+            .run_capture(builder)
+            .is_success();
         if already_applied {
             println!("ZISK: LLVM patch already applied, skipping: {}", patch.display());
             continue;
