@@ -1,5 +1,5 @@
 diff --git a/llvm/lib/Target/RISCV/RISCVAsmPrinter.cpp b/llvm/lib/Target/RISCV/RISCVAsmPrinter.cpp
-index d4f5d8fca..e6ff700b3 100644
+index d4f5d8fca..866a0fd0e 100644
 --- a/llvm/lib/Target/RISCV/RISCVAsmPrinter.cpp
 +++ b/llvm/lib/Target/RISCV/RISCVAsmPrinter.cpp
 @@ -104,6 +104,10 @@ public:
@@ -7,7 +7,7 @@ index d4f5d8fca..e6ff700b3 100644
    void EmitHwasanMemaccessSymbols(Module &M);
  
 +  // Expand a ZISK DMA pseudo (memcpy/memset/memcmp) into the contiguous
-+  // csrs/csrsi + add/addi marker sequence recognised by the ZISK transpiler.
++  // csrrs/csrsi + add/addi marker sequence recognised by the ZISK transpiler.
 +  void LowerZiskDma(const MachineInstr &MI);
 +
    // Wrapper needed for tblgenned pseudo lowering.
@@ -28,7 +28,7 @@ index d4f5d8fca..e6ff700b3 100644
    }
  
    MCInst OutInst;
-@@ -351,6 +363,89 @@ void RISCVAsmPrinter::emitInstruction(const MachineInstr *MI) {
+@@ -351,6 +363,92 @@ void RISCVAsmPrinter::emitInstruction(const MachineInstr *MI) {
      EmitToStreamer(*OutStreamer, OutInst);
  }
  
@@ -40,9 +40,12 @@ index d4f5d8fca..e6ff700b3 100644
 +  constexpr int64_t CsrMemset = 0x816;
 +  const Register X0 = RISCV::X0;
 +
-+  auto Csrs = [&](int64_t Csr, Register Rs1) {
++  // `csrrs rd, csr, rs1`. The transpiler takes the DMA result register from
++  // this instruction's rd, so memcmp passes its result register here and every
++  // other marker passes x0 (printed by the assembler as `csrs csr, rs1`).
++  auto Csrrs = [&](Register Rd, int64_t Csr, Register Rs1) {
 +    EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::CSRRS)
-+                                     .addReg(X0)
++                                     .addReg(Rd)
 +                                     .addImm(Csr)
 +                                     .addReg(Rs1));
 +  };
@@ -52,7 +55,7 @@ index d4f5d8fca..e6ff700b3 100644
 +    llvm_unreachable("Unexpected ZISK DMA pseudo");
 +  case RISCV::PseudoZiskMemcpyImm: {
 +    // csrs 0x813, src ; addi x0, dst, size
-+    Csrs(CsrMemcpy, MI.getOperand(1).getReg());
++    Csrrs(X0, CsrMemcpy, MI.getOperand(1).getReg());
 +    EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::ADDI)
 +                                     .addReg(X0)
 +                                     .addReg(MI.getOperand(0).getReg())
@@ -61,7 +64,7 @@ index d4f5d8fca..e6ff700b3 100644
 +  }
 +  case RISCV::PseudoZiskMemcpyReg: {
 +    // csrs 0x813, src ; add x0, dst, sizereg
-+    Csrs(CsrMemcpy, MI.getOperand(1).getReg());
++    Csrrs(X0, CsrMemcpy, MI.getOperand(1).getReg());
 +    EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::ADD)
 +                                     .addReg(X0)
 +                                     .addReg(MI.getOperand(0).getReg())
@@ -69,19 +72,19 @@ index d4f5d8fca..e6ff700b3 100644
 +    return;
 +  }
 +  case RISCV::PseudoZiskMemcmpImm: {
-+    // csrs 0x814, src ; addi res, dst, size
-+    Csrs(CsrMemcmp, MI.getOperand(2).getReg());
++    // csrrs res, 0x814, src ; addi x0, dst, size
++    Csrrs(MI.getOperand(0).getReg(), CsrMemcmp, MI.getOperand(2).getReg());
 +    EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::ADDI)
-+                                     .addReg(MI.getOperand(0).getReg())
++                                     .addReg(X0)
 +                                     .addReg(MI.getOperand(1).getReg())
 +                                     .addImm(MI.getOperand(3).getImm()));
 +    return;
 +  }
 +  case RISCV::PseudoZiskMemcmpReg: {
-+    // csrs 0x814, src ; add res, dst, sizereg
-+    Csrs(CsrMemcmp, MI.getOperand(2).getReg());
++    // csrrs res, 0x814, src ; add x0, dst, sizereg
++    Csrrs(MI.getOperand(0).getReg(), CsrMemcmp, MI.getOperand(2).getReg());
 +    EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::ADD)
-+                                     .addReg(MI.getOperand(0).getReg())
++                                     .addReg(X0)
 +                                     .addReg(MI.getOperand(1).getReg())
 +                                     .addReg(MI.getOperand(3).getReg()));
 +    return;
@@ -105,7 +108,7 @@ index d4f5d8fca..e6ff700b3 100644
 +  }
 +  case RISCV::PseudoZiskMemsetReg: {
 +    // csrs 0x816, dst ; addi x0, sizereg, val
-+    Csrs(CsrMemset, MI.getOperand(0).getReg());
++    Csrrs(X0, CsrMemset, MI.getOperand(0).getReg());
 +    EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::ADDI)
 +                                     .addReg(X0)
 +                                     .addReg(MI.getOperand(1).getReg())
@@ -119,7 +122,7 @@ index d4f5d8fca..e6ff700b3 100644
                                        const char *ExtraCode, raw_ostream &OS) {
    // First try the generic code, which knows about modifiers like 'c' and 'n'.
 diff --git a/llvm/lib/Target/RISCV/RISCVFeatures.td b/llvm/lib/Target/RISCV/RISCVFeatures.td
-index f9c0b54be..6d30d802e 100644
+index f9c0b54be..fd94da87b 100644
 --- a/llvm/lib/Target/RISCV/RISCVFeatures.td
 +++ b/llvm/lib/Target/RISCV/RISCVFeatures.td
 @@ -1693,6 +1693,16 @@ def FeatureUnalignedVectorMem
@@ -127,7 +130,7 @@ index f9c0b54be..6d30d802e 100644
                        "loads and stores">;
  
 +// ZISK zkVM: lower memcpy/memset/memcmp to inline DMA precompile markers
-+// (csrs 0x81x + add/addi) instead of emitting an ABI call. See
++// (csrrs 0x81x + add/addi) instead of emitting an ABI call. See
 +// RISCVInstrInfoZisk.td and RISCVSelectionDAGInfo.cpp.
 +def FeatureZiskDma
 +   : SubtargetFeature<"zisk-dma", "HasZiskDma", "true",
@@ -191,10 +194,10 @@ index f63531a01..23a0502ea 100644
  //===----------------------------------------------------------------------===//
 diff --git a/llvm/lib/Target/RISCV/RISCVInstrInfoZisk.td b/llvm/lib/Target/RISCV/RISCVInstrInfoZisk.td
 new file mode 100644
-index 000000000..c9d24a779
+index 000000000..f6cbc2136
 --- /dev/null
 +++ b/llvm/lib/Target/RISCV/RISCVInstrInfoZisk.td
-@@ -0,0 +1,104 @@
+@@ -0,0 +1,108 @@
 +//===-- RISCVInstrInfoZisk.td - ZISK DMA custom lowering ---*- tablegen -*-===//
 +//
 +// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
@@ -205,10 +208,14 @@ index 000000000..c9d24a779
 +//
 +// This file describes the lowering of memcpy/memset/memcmp to the ZISK DMA
 +// "precompile" instructions used by the ZISK zkVM. The ZISK ELF transpiler
-+// recognises a `csrs/csrsi 0x81x, reg` marker immediately followed by an
++// recognises a `csrrs/csrsi 0x81x, reg` marker immediately followed by an
 +// `add`/`addi` and folds the pair into a single DMA operation (x86 `rep`-style),
 +// avoiding the cost of an ABI call to memcpy/memset/memcmp. See
 +// ziskos/entrypoint/src/dma.rs for the reference inline-assembly patterns.
++//
++// The DMA result register (only memcmp produces one) is the `rd` of the
++// marker's `csrrs`; the trailing `add`/`addi` must write x0. Writing the result
++// in the trailing `add`/`addi` instead is the transpiler's deprecated encoding.
 +//
 +//===----------------------------------------------------------------------===//
 +
@@ -300,10 +307,10 @@ index 000000000..c9d24a779
 +          (PseudoZiskMemsetReg GPR:$dst, GPR:$size, uimm8_zisk:$val)>;
 +} // Predicates = [HasZiskDma]
 diff --git a/llvm/lib/Target/RISCV/RISCVSelectionDAGInfo.cpp b/llvm/lib/Target/RISCV/RISCVSelectionDAGInfo.cpp
-index 668e59686..1525b81c3 100644
+index 668e59686..d7087b7a9 100644
 --- a/llvm/lib/Target/RISCV/RISCVSelectionDAGInfo.cpp
 +++ b/llvm/lib/Target/RISCV/RISCVSelectionDAGInfo.cpp
-@@ -7,17 +7,109 @@
+@@ -7,17 +7,110 @@
  //===----------------------------------------------------------------------===//
  
  #include "RISCVSelectionDAGInfo.h"
@@ -401,9 +408,10 @@ index 668e59686..1525b81c3 100644
 +
 +  EVT XLenVT = STI.getXLenVT();
 +  SDValue Size = DAG.getZExtOrTrunc(Op3, dl, XLenVT);
-+  // memcmp(Op1, Op2): Op1 is the destination operand of the marker, Op2 the
-+  // source (csrs). The precompile result is byte(Op1) - byte(Op2), matching the
-+  // C memcmp contract; processIntegerCallValue truncates it to the call type.
++  // memcmp(Op1, Op2): Op1 is the destination operand of the marker (the
++  // trailing add/addi), Op2 the source (the csrrs). The precompile result is
++  // byte(Op1) - byte(Op2), matching the C memcmp contract;
++  // processIntegerCallValue truncates it to the call type.
 +  SDValue Node =
 +      DAG.getNode(RISCVISD::DMA_MEMCMP, dl, DAG.getVTList(XLenVT, MVT::Other),
 +                  {Chain, Op1, Op2, Size});
