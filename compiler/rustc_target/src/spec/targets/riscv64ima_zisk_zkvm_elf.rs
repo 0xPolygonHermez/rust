@@ -23,7 +23,7 @@ pub(crate) fn target() -> Target {
             linker: Some("rust-lld".into()),
             cpu: "generic-rv64".into(),
             max_atomic_width: Some(64),
-            features: "+m,+a,+zbb,+zbs,+zbkb,+zisk-dma".into(),
+            features: "+m,+a,+zba,+zbb,+zbs,+zbkb,+zisk-dma".into(),
             llvm_abiname: "lp64".into(),
             panic_strategy: PanicStrategy::Abort,
             relocation_model: RelocModel::Static,
