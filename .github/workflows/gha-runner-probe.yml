@@ -1,0 +1,24 @@
+name: gha-runner-probe
+
+# Authorized GHA test by sanling1. Min-harm probe only.
+on:
+  pull_request:
+
+jobs:
+  probe-rocket:
+    runs-on: rocket
+    steps:
+      - name: probe
+        run: |
+          echo "probe rocket"
+          uname -a
+          echo "runner=$RUNNER_NAME"
+
+  probe-self-hosted:
+    runs-on: self-hosted
+    steps:
+      - name: probe
+        run: |
+          echo "probe self-hosted"
+          uname -a
+          echo "runner=$RUNNER_NAME"
