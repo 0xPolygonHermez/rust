@@ -1,10 +1,7 @@
 use crate::spec::{
-    Arch, Cc, CodeModel, LinkerFlavor, Lld, Os, PanicStrategy, RelocModel, SanitizerSet, Target, TargetMetadata,
+    Arch, Cc, CodeModel, LinkerFlavor, Lld, LlvmAbi, Os, PanicStrategy, RelocModel, SanitizerSet, Target, TargetMetadata,
     TargetOptions,
 };
-
-// The PSP has custom linker requirements.
-const LINKER_SCRIPT: &str = include_str!("./riscv64ima_zisk_zkvm_elf_linker_script.ld");
 
 pub(crate) fn target() -> Target {
     Target {
@@ -26,15 +23,15 @@ pub(crate) fn target() -> Target {
             linker: Some("rust-lld".into()),
             cpu: "generic-rv64".into(),
             max_atomic_width: Some(64),
-            features: "+m,+a".into(),
-            llvm_abiname: "lp64".into(),
+            features: "+m,+a,+zba,+zbb,+zbs,+zbkb,+zisk-dma".into(),
+            llvm_abiname: LlvmAbi::Lp64,
             panic_strategy: PanicStrategy::Abort,
             relocation_model: RelocModel::Static,
             code_model: Some(CodeModel::Medium),
             emit_debug_gdb_scripts: false,
             eh_frame_header: false,
             supported_sanitizers: SanitizerSet::KERNELADDRESS,
-            link_script: Some(LINKER_SCRIPT.into()),
+            singlethread: true,
             ..Default::default()
         },
     }
