@@ -56,7 +56,11 @@ cfg_select! {
         mod teeos;
         pub use self::teeos::*;
     }
-    target_os = "zkvm" => {
+    all(target_os = "zkvm", target_vendor = "zisk") => {
+        mod zisk;
+        pub use self::zisk::*;
+    }
+    all(target_os = "zkvm", not(target_vendor = "zisk")) => {
         mod zkvm;
         pub use self::zkvm::*;
     }

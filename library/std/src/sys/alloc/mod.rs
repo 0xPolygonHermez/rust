@@ -109,9 +109,13 @@ cfg_select! {
         mod xous;
         use xous as imp;
     }
-    target_os = "zkvm" => {
+    all(target_os = "zkvm", not(target_vendor = "zisk")) => {
         mod zkvm;
         use zkvm as imp;
+    }
+    all(target_os = "zkvm", target_vendor = "zisk") => {
+        mod zisk;
+        use zisk as imp;
     }
 }
 

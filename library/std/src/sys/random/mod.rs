@@ -98,7 +98,11 @@ cfg_select! {
         mod wasi;
         pub use wasi::{fill_bytes, hashmap_random_keys};
     }
-    target_os = "zkvm" => {
+    all(target_os = "zkvm", target_vendor = "zisk") => {
+        mod zisk;
+        pub use zisk::fill_bytes;
+    }
+    all(target_os = "zkvm", not(target_vendor = "zisk")) => {
         mod zkvm;
         pub use zkvm::fill_bytes;
     }
